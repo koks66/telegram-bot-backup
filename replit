@@ -1,0 +1,40 @@
+modules = ["python-3.11"]
+
+[run]
+command = "python3 main.py"
+
+onBoot = "pip install -r requirements.txt"
+
+language = "python3"
+
+[nix]
+channel = "stable-25_05"
+packages = [
+  "cairo",
+  "ffmpeg-full",
+  "freetype",
+  "ghostscript",
+  "glibcLocales",
+  "gobject-introspection",
+  "gtk3",
+  "lcms2",
+  "libimagequant",
+  "libjpeg",
+  "libtiff",
+  "libwebp",
+  "libxcrypt",
+  "openjpeg",
+  "pkg-config",
+  "qhull",
+  "tcl",
+  "tk",
+  "zlib"
+]
+
+[env]
+PORT = "5000"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+exposeLocalhost = true
