@@ -3052,15 +3052,18 @@ def extract_crypto_symbol_and_timeframe(text):
         found_symbol = None
         found_timeframe = '1h'  # По умолчанию
         
-        # Проверяем прямое совпадение символов
-        for symbol in crypto_symbols:
-            if symbol in text:
+          # Сначала сортируем список монет по длине, чтобы длинные символы (например ETHFI) проверялись раньше коротких (ETH)
+        sorted_symbols = sorted(crypto_symbols, key=len, reverse=True)
+
+        # Проверяем прямое совпадение
+        for symbol in sorted_symbols:
+            if re.search(r'\b' + re.escape(symbol) + r'\b', text):
                 found_symbol = symbol
                 break
-        
-        # Если не найден прямой символ, проверяем с USDT
+
+        # Если не найдено — проверяем с USDT
         if not found_symbol:
-            for symbol in crypto_symbols:
+            for symbol in sorted_symbols:
                 if f"{symbol}USDT" in text:
                     found_symbol = symbol
                     break
@@ -3139,11 +3142,18 @@ def extract_crypto_symbol_and_timeframe(text):
                 if re.search(pattern, text, re.IGNORECASE):
                     found_timeframe = tf
                     break
-        
         if found_symbol:
             return (found_symbol, found_timeframe)
         
-          return None
+        return None
+
+    except Exception as e:
+        print(f"❌ Ошибка извлечения символа и таймфрейма: {e}")
+        return None
+
+    except Exception as e:
+        print(f"❌ Ошибка извлечения символа и таймфрейма: {e}")
+        return None
 
 
 # --- Автопуш проекта в GitHub ---
@@ -3158,6 +3168,7 @@ def auto_push():
     except Exception as e:
         print(f"❌ Ошибка автопуша: {e}")
 
+
 # Запускаем задачу автопуша каждые 60 минут
 scheduler.add_job(auto_push, 'interval', hours=1, id='auto_git_push')
 
@@ -3167,6 +3178,4 @@ if __name__ == '__main__':
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
     print(f"✅ Webhook установлен: {WEBHOOK_URL}/[ТОКЕН_СКРЫТ]")
-
-    # Стартуем Flask
     app.run(host='0.0.0.0', port=5000)
