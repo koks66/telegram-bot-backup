@@ -22,6 +22,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import io
+from pytz import timezone
+import io
 
 app = Flask(__name__)
 
@@ -2333,6 +2335,18 @@ def help_command(message):
     except Exception as e:
         print(f"⚠ Не удалось закрепить сообщение: {e}")
         bot.send_message(message.chat.id, help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!")
+# --- Проверка Binance API ---
+def check_binance_api():
+    import requests
+    try:
+        url = "https://api.binance.com/api/v3/ping"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            return "🟢 Binance API: **РАБОТАЕТ**"
+        else:
+            return "🔴 Binance API: **ОШИБКА**"
+    except Exception:
+        return "🔴 Binance API: **ОШИБКА**"
 
 @bot.message_handler(commands=['status'])
 def status_command(message):
@@ -2341,30 +2355,26 @@ def status_command(message):
         bot.reply_to(message, "🔒 Доступ только для админа")
         return
     
-    # Проверяем статус систем
-    status_text = "🔧 **СТАТУС ТОРГОВОГО БОТА**\n\n"
-    
     # Проверяем автоскрининг
-    if auto_scanning_active:
-        status_text += "🟢 Автоскрининг: **АКТИВЕН** (каждые 60 сек)\n"
-    else:
-        status_text += "⚪ Автоскрининг: **ВЫКЛЮЧЕН**\n"
+    scan_status = "🟢 Автоскрининг: **АКТИВЕН** (каждые 60 сек)" if scheduler.get_job('auto_scalping_scan') else "⚪ Автоскрининг: **ВЫКЛЮЧЕН**"
     
-    # Проверяем API
     # Источник данных
     global data_source
-    status_text += f"📊 Источник данных: **{data_source.upper()}**\n"
+    source_status = f"📊 Источник данных: **{data_source.upper()}**"
     
-    try:
-        # Тестируем текущий источник данных
-        test_data = get_coin_data("BTC", "1h", 1)
-        if test_data is not None:
-            status_text += f"🟢 {data_source.title()} API: **РАБОТАЕТ**\n"
-        else:
-            status_text += f"🔴 {data_source.title()} API: **ОШИБКА**\n"
-    except:
-        status_text += f"🔴 {data_source.title()} API: **НЕДОСТУПЕН**\n"
-    
+    # Binance API статус (только если источник Binance)
+    if data_source.lower() == "binance":
+        api_status = check_binance_api()
+    else:
+        # Для CoinGecko проверим через get_coin_data
+        try:
+            test_data = get_coin_data("BTC", "1h", 1)
+            if test_data is not None:
+                api_status = f"🟢 {data_source.title()} API: **РАБОТАЕТ**"
+            else:
+                api_status = f"🔴 {data_source.title()} API: **ОШИБКА**"
+        except:
+            api_status = f"🔴 {data_source.title()} API: **НЕДОСТУПЕН**"
     
     # Проверяем Gemini AI
     try:
@@ -2373,17 +2383,29 @@ def status_command(message):
             contents="test"
         )
         if response:
-            status_text += "🟢 Gemini AI: **РАБОТАЕТ**\n"
+            gemini_status = "🟢 Gemini AI: **РАБОТАЕТ**"
         else:
-            status_text += "🔴 Gemini AI: **ОШИБКА**\n"
+            gemini_status = "🔴 Gemini AI: **ОШИБКА**"
     except:
-        status_text += "🔴 Gemini AI: **НЕДОСТУПЕН**\n"
+        gemini_status = "🔴 Gemini AI: **НЕДОСТУПЕН**"
     
-    status_text += f"\n⏰ **Время проверки:** {datetime.now().strftime('%H:%M:%S')}"
-    status_text += f"\n🤖 **Версия:** Multi-Timeframe Analysis v3.0"
+    # Время по Киеву
+    from pytz import timezone
+    kyiv_time = datetime.now(timezone("Europe/Kiev"))
+    time_status = f"⏰ **Время проверки:** {kyiv_time.strftime('%H:%M:%S')}"
     
-    bot.send_message(message.chat.id, status_text)
+    # Итоговый текст
+    status_text = f"""🔧 **СТАТУС ТОРГОВОГО БОТА**
 
+{scan_status}
+{source_status}
+{api_status}
+{gemini_status}
+
+{time_status}
+🤖 **Версия:** Multi-Timeframe Analysis v3.0
+"""
+    bot.send_message(message.chat.id, status_text, parse_mode="Markdown")
 @bot.message_handler(commands=['source', 'источник'])
 def switch_data_source(message):
     # Уведомляем администратора о переключении источника
