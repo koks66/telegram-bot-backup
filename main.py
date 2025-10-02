@@ -3143,15 +3143,30 @@ def extract_crypto_symbol_and_timeframe(text):
         if found_symbol:
             return (found_symbol, found_timeframe)
         
-        return None
-        
+          return None
+
+
+# --- Автопуш проекта в GitHub ---
+def auto_push():
+    import os
+    try:
+        print("🔄 Автопуш в GitHub...")
+        os.system("git add .")
+        os.system('git commit -m "Автопуш из Replit"')
+        os.system("git push origin main")
+        print("✅ Автопуш выполнен")
     except Exception as e:
-        print(f"❌ Ошибка извлечения символа и таймфрейма: {e}")
-        return None
+        print(f"❌ Ошибка автопуша: {e}")
+
+# Запускаем задачу автопуша каждые 60 минут
+scheduler.add_job(auto_push, 'interval', hours=1, id='auto_git_push')
+
 
 if __name__ == '__main__':
     print("✅ Все секреты найдены. Настраиваю webhook...")
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
     print(f"✅ Webhook установлен: {WEBHOOK_URL}/[ТОКЕН_СКРЫТ]")
+
+    # Стартуем Flask
     app.run(host='0.0.0.0', port=5000)
