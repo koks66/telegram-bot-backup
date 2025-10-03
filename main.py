@@ -2588,20 +2588,25 @@ def handle_scan_command(message):
                 'volume_raw': float(coin.get('quoteVolume', 0))
             })
         
-        # Определяем лучшую монету
+               # Определяем лучшую монету
         best_coin = None
         for coin in coins_data:
             if (coin['rsi_raw'] < 30 or coin['rsi_raw'] > 70) and coin['volume_raw'] > 10000000:
                 coin['star'] = ' ⭐'
                 best_coin = coin['symbol']
                 break
+
+        # Если ничего не нашли — берём первую монету по умолчанию
+        if not best_coin and coins_data:
+            coins_data[0]['star'] = ' ⭐'
+            best_coin = coins_data[0]['symbol']
         
         # Формируем ответ
         response_text = ""
         
         # Добавляем строку лучшей сделки
         if best_coin:
-            response_text += f"🔥 **ЛУЧШАЯ СДЕЛКА: {best_coin} ⭐**\n\n"
+            response_text += f"🔥 ЛУЧШАЯ СДЕЛКА: {best_coin} ⭐\n\n"
         
         response_text += "🎯 **ТОП-3 ЛУЧШИЕ МОНЕТЫ ДЛЯ СКАЛЬПИНГА СЕЙЧАС:**\n\n"
         
@@ -2702,7 +2707,10 @@ def handle_scan_command(message):
         response_text += f"• Совпадение: {comparison_emoji} {'Да' if tech_top == gemini_top else 'Нет'}\n"
         response_text += f"• {explanation}\n\n"
         
-        response_text += f"⏰ Обновлено: {time.strftime('%H:%M:%S')}"
+        # Время по Киеву
+        from pytz import timezone
+        kyiv_time = datetime.now(timezone("Europe/Kiev"))
+        response_text += f"⏰ Обновлено: {kyiv_time.strftime('%H:%M:%S')}"
         
         # Ограничиваем длину ответа для Telegram
         max_length = 4000
