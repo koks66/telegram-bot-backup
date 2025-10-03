@@ -2700,10 +2700,12 @@ def handle_ftrade(message):
     try:
         args = message.text.split()
         if len(args) < 3:
-            bot.reply_to(message,
-                         "⚠ Использование: `/ftrade SYMBOLUSDT [депозит] [риск%] [таймфрейм] [режим]`\n\n"
-                         "Пример: `/ftrade BTCUSDT 200 2 1h swing`",
-                         parse_mode="Markdown")
+            bot.reply_to(
+                message,
+                "⚠ Использование: `/ftrade SYMBOLUSDT [депозит] [риск%] [таймфрейм] [режим]`\n\n"
+                "Пример: `/ftrade BTCUSDT 200 2 1h swing`",
+                parse_mode="Markdown"
+            )
             return
 
         symbol = args[1].upper()
@@ -2712,7 +2714,7 @@ def handle_ftrade(message):
         timeframe = args[4] if len(args) > 4 else "1h"
         mode = args[5].lower() if len(args) > 5 else "swing"
 
-        # Получаем данные
+        # --- Загружаем данные ---
         df = get_coin_data(symbol.replace("USDT", ""), interval=timeframe, limit=200)
         if df is None or len(df) < 20:
             bot.reply_to(message, f"❌ Недостаточно данных для {symbol} ({timeframe})")
@@ -2720,25 +2722,26 @@ def handle_ftrade(message):
 
         last_price = df["close"].iloc[-1]
 
-        # Индикаторы
+        # --- Индикаторы ---
         df["EMA20"] = df["close"].ewm(span=20).mean()
         df["EMA50"] = df["close"].ewm(span=50).mean()
         rsi = calculate_rsi(df["close"], 14).iloc[-1]
 
-        # ATR для стоп/тейков
+        # --- ATR для расчёта стопов/тейков ---
         atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
         if mode == "scalp":
             stop_loss = last_price - 1.0 * atr
-            tp1 = last_price + 1.0 * atr
-            tp2 = last_price + 1.5 * atr
+            tp1 = last_price + 1.2 * atr
+            tp2 = last_price + 2.0 * atr
         else:  # swing
             stop_loss = last_price - 1.5 * atr
             tp1 = last_price + 2.0 * atr
             tp2 = last_price + 3.0 * atr
 
-        entry_zone = f"{last_price*0.998:.4f} – {last_price*1.002:.4f}"
+        entry_low = last_price * 0.998
+        entry_high = last_price * 1.002
 
-        # Расчёт позиции
+        # --- Позиция ---
         risk_amount = deposit * (risk_percent / 100)
         risk_per_unit = abs(last_price - stop_loss)
         pos_size = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
@@ -2746,47 +2749,42 @@ def handle_ftrade(message):
         leverage = 1
         while (pos_size * last_price) / leverage > deposit * 0.25 and leverage < 50:
             leverage += 1
-
         margin = (pos_size * last_price) / leverage if leverage > 0 else 0
 
-        # RRR считаем по TP1
+        # --- RRR ---
         reward = abs(tp1 - last_price)
         risk = abs(last_price - stop_loss)
         rrr = reward / risk if risk > 0 else 0
+        rrr_status = "⚠ Плохое" if rrr < 1 else ("⚠ Среднее" if rrr < 2 else "✅ Отличное")
 
-        if rrr < 1:
-            rrr_status = "⚠ Плохое"
-        elif rrr < 2:
-            rrr_status = "⚠ Среднее"
-        else:
-            rrr_status = "✅ Отличное"
-
-        # Авто-сигнал
+        # --- Автосигнал ---
         signal_note = ""
         if rsi < 30:
-            signal_note = "🟢 RSI ниже 30 → возможный лонг!"
+            signal_note = "🟢 RSI < 30 → возможный лонг!"
         elif rsi > 70:
-            signal_note = "🔴 RSI выше 70 → возможный шорт!"
+            signal_note = "🔴 RSI > 70 → возможный шорт!"
         elif rrr > 2:
             signal_note = "⚡ Высокое RRR, сделка перспективная!"
 
-        # --- График ---
+        # --- График с зонами ---
         buf = io.BytesIO()
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(12, 6))
         plt.plot(df["timestamp"], df["close"], label="Цена", color="blue")
         plt.plot(df["timestamp"], df["EMA20"], label="EMA20", color="orange")
         plt.plot(df["timestamp"], df["EMA50"], label="EMA50", color="purple")
 
-        # Зоны
-        plt.axhline(stop_loss, color="red", linestyle="--", label="Stop")
-        plt.axhline(tp1, color="green", linestyle="--", label="TP1")
-        plt.axhline(tp2, color="darkgreen", linestyle="--", label="TP2")
+        # Зоны прямоугольниками
         plt.axhline(last_price, color="yellow", linestyle="--", label="Entry")
+        plt.fill_between(df["timestamp"], entry_low, entry_high, color="yellow", alpha=0.2)
 
-        plt.fill_between(df["timestamp"], stop_loss, stop_loss*1.001, color="red", alpha=0.3)
-        plt.fill_between(df["timestamp"], tp1*0.999, tp1*1.001, color="lime", alpha=0.3)
-        plt.fill_between(df["timestamp"], tp2*0.999, tp2*1.001, color="darkgreen", alpha=0.3)
-        plt.fill_between(df["timestamp"], last_price*0.998, last_price*1.002, color="yellow", alpha=0.3)
+        plt.axhline(stop_loss, color="red", linestyle="--", label="Stop")
+        plt.fill_between(df["timestamp"], stop_loss*0.999, stop_loss*1.001, color="red", alpha=0.2)
+
+        plt.axhline(tp1, color="green", linestyle="--", label="TP1")
+        plt.fill_between(df["timestamp"], tp1*0.999, tp1*1.001, color="lightgreen", alpha=0.2)
+
+        plt.axhline(tp2, color="darkgreen", linestyle="--", label="TP2")
+        plt.fill_between(df["timestamp"], tp2*0.999, tp2*1.001, color="darkgreen", alpha=0.2)
 
         plt.title(f"{symbol} {timeframe} Анализ")
         plt.xlabel("Время")
@@ -2797,7 +2795,7 @@ def handle_ftrade(message):
         plt.savefig(buf, format="png")
         buf.seek(0)
 
-        # --- Сообщение ---
+        # --- Итоговый текст ---
         caption = (
             f"📊 **Фьючерс-анализ {symbol} ({timeframe})**\n\n"
             f"💰 Баланс: {deposit:.2f} USDT\n"
@@ -2806,18 +2804,39 @@ def handle_ftrade(message):
             f"🛑 Стоп-лосс: {stop_loss:.4f}\n"
             f"🎯 TP1: {tp1:.4f}\n"
             f"🎯 TP2: {tp2:.4f}\n"
-            f"📐 RRR: {rrr:.2f} → {rrr_status}\n\n"
+            f"📐 RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
             f"📊 Позиция: {pos_size:.3f} {symbol.replace('USDT','')}\n"
             f"⚡ Плечо: x{leverage}\n"
             f"💵 Маржа: {margin:.2f} USDT\n\n"
             f"📐 RSI: {rsi:.2f}\n"
             f"🧮 EMA20: {df['EMA20'].iloc[-1]:.4f} | EMA50: {df['EMA50'].iloc[-1]:.4f}\n\n"
             f"{signal_note}\n\n"
-            f"ℹ️ Зоны на графике: Entry (жёлтая), Stop (красная), TP1 (светло-зелёная), TP2 (тёмно-зелёная)"
+            f"ℹ️ Зоны: Entry (жёлтая), Stop (красная), TP1 (светло-зелёная), TP2 (тёмно-зелёная)"
         )
 
         bot.send_photo(message.chat.id, buf, caption=caption, parse_mode="Markdown")
         buf.close()
+
+        # --- JSON (все числа приводим к float) ---
+        setup = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "deposit": deposit,
+            "risk_percent": risk_percent,
+            "price": float(last_price),
+            "stop_loss": float(stop_loss),
+            "tp1": float(tp1),
+            "tp2": float(tp2),
+            "rrr": float(rrr),
+            "position_size": float(pos_size),
+            "leverage": int(leverage),
+            "margin": float(margin),
+            "rsi": float(rsi),
+            "ema20": float(df["EMA20"].iloc[-1]),
+            "ema50": float(df["EMA50"].iloc[-1]),
+        }
+        with open("ftrade_setup.json", "w") as f:
+            json.dump(setup, f, indent=4)
 
     except Exception as e:
         print(f"❌ Ошибка в /ftrade: {e}")
