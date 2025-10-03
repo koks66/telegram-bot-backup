@@ -1971,7 +1971,72 @@ def webhook():
 @app.route('/')
 def index():
     return "✅ Бот запущен и слушает вебхук!", 200
+# --- Утилиты для анализа и форматирования ---
 
+def calculate_rsi(series, period: int = 14):
+    """Расчет RSI (Relative Strength Index)"""
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, 1e-10)  # защита от деления на ноль
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)  # при недостатке данных возвращаем нейтральное значение
+
+def safe_caption(text, max_length=1024):
+    """Обрезает текст до безопасной длины для caption в Telegram"""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
+
+def smart_format_price(price):
+    """Умное форматирование цены"""
+    if price == 0:
+        return "$0.000"
+    if price >= 1:
+        return f"${price:.3f}"
+    elif price >= 0.01:
+        return f"${price:.4f}"
+    elif price >= 0.001:
+        return f"${price:.5f}"
+    elif price >= 0.0001:
+        return f"${price:.6f}"
+    elif price >= 0.00001:
+        return f"${price:.7f}"
+    else:
+        return f"${price:.8f}"
+
+def generate_chart_analysis(symbol, levels, current_market_analysis="", timeframe='1h'):
+    """Генерирует текстовый анализ для графика"""
+    try:
+        if not levels:
+            return "❌ Не удалось провести технический анализ"
+
+        trend = "📈 Восходящий" if levels.get("trend_up") else "📉 Нисходящий"
+
+        return f"""📊 {symbol.replace("USDT", "/USDT")} {timeframe}
+
+{levels['signal_type']} | {trend}
+
+💰 Цена: {smart_format_price(levels['current_price'])}
+📊 EMA20: {smart_format_price(levels.get('ema_20', 0))} | RSI: {levels.get('rsi', 50):.0f}
+📈 ATR: {levels.get('atr_pct', 0):.1f}% | RRR: 1:{levels.get('risk_reward', 0):.1f}
+
+🎯 Зоны:
+🟡 Вход: {smart_format_price(levels['entry_zone']['lower'])}-{smart_format_price(levels['entry_zone']['upper'])}
+🔴 Стоп: {smart_format_price(levels['stop_zone']['lower'])}-{smart_format_price(levels['stop_zone']['upper'])}
+🟢 TP1: {smart_format_price(levels['tp1_zone']['lower'])}-{smart_format_price(levels['tp1_zone']['upper'])}
+🟢 TP2: {smart_format_price(levels['tp2_zone']['lower'])}-{smart_format_price(levels['tp2_zone']['upper'])}
+
+{current_market_analysis}
+
+⚠ Не является финансовым советом"""
+    except Exception as e:
+        print(f"❌ Ошибка генерации анализа: {e}")
+        return "❌ Ошибка анализа"
 # --- Обработка команд ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -2629,173 +2694,147 @@ def handle_start_scan_command(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка запуска: {e}")
 # --- Команда для фьючерс-анализа ---
+# --- Команда /ftrade ---
 @bot.message_handler(commands=['ftrade'])
 def handle_ftrade(message):
     try:
-        parts = message.text.split()
-
-        if len(parts) < 2:
-            bot.reply_to(message, """⚠️ Неверный формат команды!
-
-✅ Примеры:
-`/ftrade BTCUSDT` - с настройками по умолчанию
-`/ftrade BTCUSDT 200` - депозит 200 USDT, риск по умолчанию
-`/ftrade BTCUSDT 200 2` - депозит 200 USDT, риск 2%
-""", parse_mode="Markdown")
+        args = message.text.split()
+        if len(args) < 3:
+            bot.reply_to(message,
+                         "⚠ Использование: `/ftrade SYMBOLUSDT [депозит] [риск%] [таймфрейм] [режим]`\n\n"
+                         "Пример: `/ftrade BTCUSDT 200 2 1h swing`",
+                         parse_mode="Markdown")
             return
 
-        symbol = parts[1].upper()
+        symbol = args[1].upper()
+        deposit = float(args[2])
+        risk_percent = float(args[3]) if len(args) > 3 else 2
+        timeframe = args[4] if len(args) > 4 else "1h"
+        mode = args[5].lower() if len(args) > 5 else "swing"
 
-        # Берём значения из глобальных настроек
-        deposit = FUTURES_SETTINGS["deposit"]
-        risk_percent = FUTURES_SETTINGS["risk_percent"]
-
-        # Если пользователь ввёл депозит
-        if len(parts) >= 3:
-            deposit = float(parts[2])
-
-        # Если ввёл риск %
-        if len(parts) >= 4:
-            risk_percent = float(parts[3])
-
-        # Теперь у нас всегда есть symbol, deposit, risk_percent
-        # --- Дальше твоя логика анализа (как в старом коде) ---
-        df = get_coin_data(symbol.replace("USDT", ""), interval="15m", limit=100)
-        if df is None or df.empty:
-            bot.reply_to(message, f"❌ Не удалось получить данные по {symbol}")
+        # --- Получение данных ---
+        df = get_coin_data(symbol.replace("USDT", ""), interval=timeframe, limit=200)
+        if df is None or len(df) < 20:
+            bot.reply_to(message, f"❌ Недостаточно данных для {symbol} ({timeframe})")
             return
 
-        closes = df['close'].tolist()
-        last_price = closes[-1]
+        last_price = df["close"].iloc[-1]
 
-        # ATR для волатильности
-        def calc_atr(data, period=14):
-            trs = []
-            for i in range(1, len(data)):
-                high = df['high'].iloc[i]
-                low = df['low'].iloc[i]
-                prev_close = df['close'].iloc[i-1]
-                tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
-                trs.append(tr)
-            return sum(trs[-period:]) / period if len(trs) >= period else 0
+        # --- Индикаторы ---
+        df["EMA20"] = df["close"].ewm(span=20).mean()
+        df["EMA50"] = df["close"].ewm(span=50).mean()
+        rsi = calculate_rsi(df["close"], 14).iloc[-1]
 
-        atr = calc_atr(df)
+        # --- ATR ---
+        atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
+        if mode == "scalp":
+            stop_loss = last_price - 1.0 * atr
+            take_profit = last_price + 1.5 * atr
+        else:  # swing
+            stop_loss = last_price - 1.5 * atr
+            take_profit = last_price + 2.5 * atr
 
-        # Сумма риска
+        entry_zone = f"{last_price*0.998:.4f} – {last_price*1.002:.4f}"
+
+        # --- Расчёт позиции ---
         risk_amount = deposit * (risk_percent / 100)
+        risk_per_unit = abs(last_price - stop_loss)
+        pos_size = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
 
-        # Стоп и тейк (2хATR)
-        stop_loss = last_price - 2 * atr
-        take_profit = last_price + 2 * atr
-
-        # Размер позиции
-        pos_size = risk_amount / (last_price - stop_loss)
-
-        # Плечо
         leverage = 1
-        while (pos_size * last_price) / leverage > deposit * 0.2 and leverage < 50:
+        while (pos_size * last_price) / leverage > deposit * 0.25 and leverage < 50:
             leverage += 1
+        margin = (pos_size * last_price) / leverage if leverage > 0 else 0
 
-        margin = (pos_size * last_price) / leverage
+        # --- RRR ---
+        reward = abs(take_profit - last_price)
+        risk = abs(last_price - stop_loss)
+        rrr = reward / risk if risk > 0 else 0
 
-        # Ответ
-        reply = f"""📊 **Фьючерс-анализ {symbol}**
+        if rrr < 1:
+            rrr_status = "⚠ Плохое"
+        elif rrr < 2:
+            rrr_status = "⚠ Среднее"
+        else:
+            rrr_status = "✅ Отличное"
 
-💰 Баланс: {deposit:.2f} USDT
-⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)
+        # --- Авто-сигнал ---
+        signal_note = ""
+        if rsi < 30:
+            signal_note = "🟢 RSI < 30 → возможный лонг!"
+        elif rsi > 70:
+            signal_note = "🔴 RSI > 70 → возможный шорт!"
+        elif rrr > 2:
+            signal_note = "⚡ Высокое RRR, сделка перспективная!"
 
-📈 Цена входа: {last_price:.2f}
-🛑 Стоп-лосс: {stop_loss:.2f}
-🎯 Тейк-профит: {take_profit:.2f}
+        # --- График ---
+        buf = io.BytesIO()
+        plt.figure(figsize=(12, 6))
+        plt.plot(df["timestamp"], df["close"], label="Цена", color="blue")
+        plt.plot(df["timestamp"], df["EMA20"], label="EMA20", color="orange")
+        plt.plot(df["timestamp"], df["EMA50"], label="EMA50", color="purple")
 
-📊 Размер позиции: {pos_size:.3f} {symbol.replace("USDT","")}
-⚡ Плечо: x{leverage}
-💵 Маржа: {margin:.2f} USDT
-"""
-        bot.reply_to(message, reply, parse_mode="Markdown")
+        # Зоны
+        plt.axhline(stop_loss, color="red", linestyle="--", label="Stop")
+        plt.axhline(take_profit, color="green", linestyle="--", label="Take")
+        plt.axhline(last_price, color="yellow", linestyle="--", label="Entry")
 
-    except Exception as e:
-        print(f"❌ Ошибка в ftrade: {e}")
-        bot.reply_to(message, f"⚠ Ошибка: {e}")
+        plt.fill_between(df["timestamp"], stop_loss, take_profit, color="gray", alpha=0.1)
 
-@bot.message_handler(commands=['futurescan'])
-def handle_futurescan(message):
-    """
-    Подбирает оптимальные монеты для торговли фьючерсами
-    и показывает рекомендации по плечу и риску.
-    """
-    try:
-        bot.reply_to(message, "🔍 Ищу лучшие монеты для торговли фьючерсами...\n⏳ Это может занять несколько секунд")
+        plt.title(f"{symbol} {timeframe} Анализ")
+        plt.xlabel("Время")
+        plt.ylabel("Цена")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
 
-        # Получаем лучшие монеты для скальпинга (твой же сканер)
-        top_coins = screen_best_coins_for_scalping()
-        if not top_coins:
-            bot.reply_to(message, "❌ Не удалось получить данные рынка для фьючерс-анализа")
-            return
+        # --- Подпись ---
+        caption = (
+            f"📊 **Фьючерс-анализ {symbol} ({timeframe})**\n\n"
+            f"💰 Баланс: {deposit:.2f} USDT\n"
+            f"⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)\n\n"
+            f"📈 Цена: {last_price:.4f}\n"
+            f"🛑 Стоп-лосс: {stop_loss:.4f}\n"
+            f"🎯 Тейк-профит: {take_profit:.4f}\n"
+            f"📐 RRR: {rrr:.2f} → {rrr_status}\n\n"
+            f"📊 Позиция: {pos_size:.3f} {symbol.replace('USDT','')}\n"
+            f"⚡ Плечо: x{leverage}\n"
+            f"💵 Маржа: {margin:.2f} USDT\n\n"
+            f"📐 RSI: {rsi:.2f}\n"
+            f"🧮 EMA20: {df['EMA20'].iloc[-1]:.4f} | EMA50: {df['EMA50'].iloc[-1]:.4f}\n\n"
+            f"{signal_note}\n\n"
+            f"ℹ️ Зоны на графике: Entry (жёлтая), Stop (красная), Take (зелёная)"
+        )
 
-        # Берём топ-3
-        top_3 = top_coins[:3]
-        results = []
+        bot.send_photo(message.chat.id, buf, caption=caption, parse_mode="Markdown")
+        buf.close()
 
-        for coin in top_3:
-            symbol = coin['symbol']
-            df = get_coin_data(symbol.replace("USDT", ""), interval="15m", limit=100)
-            if df is None or df.empty:
-                continue
-
-            closes = df['close'].tolist()
-            last_price = closes[-1]
-
-            # ATR для расчёта стопа/тейка
-            def calc_atr(data, period=14):
-                trs = []
-                for i in range(1, len(data)):
-                    high = df['high'].iloc[i]
-                    low = df['low'].iloc[i]
-                    prev_close = df['close'].iloc[i-1]
-                    tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
-                    trs.append(tr)
-                return sum(trs[-period:]) / period if len(trs) >= period else 0
-
-            atr = calc_atr(df)
-
-            # --- Берём глобальные настройки
-            deposit = FUTURES_SETTINGS["deposit"]
-            risk_percent = FUTURES_SETTINGS["risk_percent"]
-            risk_amount = deposit * (risk_percent / 100)
-
-            # Стоп и тейк
-            stop_loss = last_price - 2 * atr
-            take_profit = last_price + 2 * atr
-
-            # Размер позиции
-            pos_size = risk_amount / (last_price - stop_loss)
-
-            # Автоподбор плеча
-            leverage = 1
-            while (pos_size * last_price) / leverage > deposit * 0.2 and leverage < 50:
-                leverage += 1
-
-            margin = (pos_size * last_price) / leverage
-
-            results.append(f"""💹 **{symbol}**
-📈 Цена: {last_price:.2f}
-🛑 SL: {stop_loss:.2f} | 🎯 TP: {take_profit:.2f}
-⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)
-📊 Позиция: {pos_size:.2f} {symbol.replace("USDT","")}
-⚡ Плечо: x{leverage} | 💵 Маржа: {margin:.2f} USDT
-""")
-
-        if not results:
-            bot.reply_to(message, "❌ Не удалось рассчитать фьючерсные рекомендации")
-            return
-
-        reply_text = "📊 **ТОП-3 РЕКОМЕНДАЦИИ ДЛЯ ФЬЮЧЕРСОВ:**\n\n" + "\n".join(results)
-        bot.send_message(message.chat.id, reply_text, parse_mode="Markdown")
+        # --- Сохранение сетапа в JSON ---
+        setup = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "deposit": deposit,
+            "risk_percent": risk_percent,
+            "price": float(last_price),
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+            "rrr": float(rrr),
+            "position_size": float(pos_size),
+            "leverage": int(leverage),
+            "margin": float(margin),
+            "rsi": float(rsi),
+            "ema20": float(df["EMA20"].iloc[-1]),
+            "ema50": float(df["EMA50"].iloc[-1]),
+            "trend_up": bool(df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1])
+        }
+        with open("ftrade_setup.json", "w") as f:
+            json.dump(setup, f, indent=4)
 
     except Exception as e:
-        print(f"❌ Ошибка в futurescan: {e}")
-        bot.reply_to(message, f"⚠ Ошибка в futurescan: {e}")
+        print(f"❌ Ошибка в /ftrade: {e}")
+        bot.reply_to(message, f"⚠ Ошибка в /ftrade: {e}")
 
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
