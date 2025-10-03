@@ -27,7 +27,8 @@ import io
 # --- Глобальные переменные ---
 
 # Чат, куда бот шлет авто-скан
-AUTO_SCAN_CHAT_ID = None  
+AUTO_SCAN_CHAT_ID = None 
+FTRADE_WIZARD = {}
 
 # --- Глобальные переменные для фьючерс-анализа ---
 FUTURES_SETTINGS = {
@@ -762,214 +763,6 @@ def generate_scalping_signal(coin_data):
 
 # --- АВТОМАТИЧЕСКИЙ ПЛАНИРОВЩИК ДЛЯ СКАЛЬПИНГА ---
 
-def auto_send_scalping_signals():
-    """Автоматическая отправка обновленных сигналов каждые 60 секунд"""
-    try:
-        print("🔄 Автоматический скрининг запущен...")
-        
-        # Получаем лучшие монеты для скальпинга
-        top_coins = screen_best_coins_for_scalping()
-        
-        if not top_coins:
-            print("📊 Нет подходящих монет для скальпинга")
-            return
-        
-        # Берем ТОП-3 лучшие монеты
-        top_3_coins = top_coins[:3]
-        
-        # Собираем данные с RSI и SMA для каждой монеты
-        coins_data = []
-        medals = ["🥇", "🥈", "🥉"]
-        
-        for i, coin in enumerate(top_3_coins):
-            symbol = coin['symbol']
-            signal = generate_scalping_signal(coin)
-            
-            if not signal:
-                continue
-            
-            # Получаем klines для расчета RSI и SMA
-            klines_data = get_binance_klines(symbol, "5m", 50)
-            
-            rsi = 50  # Дефолт
-            sma_20 = signal['current_price']  # Дефолт
-            
-            if klines_data and len(klines_data) >= 20:
-                closes = [k['close'] for k in klines_data]
-                
-                # Расчет RSI
-                def calc_rsi(prices, period=14):
-                    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-                    gains = [d if d > 0 else 0 for d in deltas]
-                    losses = [-d if d < 0 else 0 for d in deltas]
-                    
-                    avg_gain = sum(gains[:period]) / period
-                    avg_loss = sum(losses[:period]) / period
-                    
-                    if avg_loss == 0:
-                        return 100
-                    
-                    rs = avg_gain / avg_loss
-                    return 100 - (100 / (1 + rs))
-                
-                rsi = calc_rsi(closes)
-                sma_20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else closes[-1]
-            
-            # Визуальные индикаторы RSI
-            rsi_indicator = ""
-            if rsi < 30:
-                rsi_indicator = "🟢"  # Перепроданность
-            elif rsi > 70:
-                rsi_indicator = "🔴"  # Перекупленность
-            
-            # Эмодзи сигнала
-            signal_emoji = "🟢" if "LONG" in signal['signal_type'] else "🔴"
-            
-            coins_data.append({
-                'priority': medals[i],
-                'symbol': signal['symbol'],
-                'price': f"{signal['current_price']:.4f}" if signal['current_price'] < 1 else f"{signal['current_price']:.2f}",
-                'signal_emoji': signal_emoji,
-                'signal_type': signal['signal_type'],
-                'rsi': f"{rsi:.0f} | {rsi_indicator}" if rsi_indicator else f"{rsi:.0f}",
-                'sma_20': f"{sma_20:.4f}" if sma_20 < 1 else f"{sma_20:.2f}",
-                'volume_24h': signal['volume_24h'],
-                'rrr': signal['rrr'],
-                'entry': f"{signal['entry']:.4f}" if signal['entry'] < 1 else f"{signal['entry']:.2f}",
-                'stop_loss': f"{signal['stop_loss']:.4f}" if signal['stop_loss'] < 1 else f"{signal['stop_loss']:.2f}",
-                'take_profit_1': f"{signal['take_profit_1']:.4f}" if signal['take_profit_1'] < 1 else f"{signal['take_profit_1']:.2f}",
-                'star': '',
-                'rsi_raw': rsi,
-                'volume_raw': float(coin.get('quoteVolume', 0))
-            })
-        
-        if not coins_data:
-            return
-        
-        # Определяем лучшую монету
-        best_coin = None
-        for coin in coins_data:
-            if (coin['rsi_raw'] < 30 or coin['rsi_raw'] > 70) and coin['volume_raw'] > 10000000:
-                coin['star'] = ' ⭐'
-                best_coin = coin['symbol']
-                break
-        
-        # Формируем ответ
-        response_text = ""
-        
-        # Добавляем строку лучшей сделки
-        if best_coin:
-            response_text += f"🔥 **ЛУЧШАЯ СДЕЛКА: {best_coin} ⭐**\n\n"
-        
-        response_text += "🎯 **ТОП-3 ЛУЧШИЕ МОНЕТЫ ДЛЯ СКАЛЬПИНГА СЕЙЧАС:**\n\n"
-        
-        # Таблица Markdown
-        response_text += "| Ранг | Монета | Цена | Сигнал | RSI | SMA20 | Объём | RRR |\n"
-        response_text += "|------|--------|------|--------|-----|-------|-------|-----|\n"
-        
-        # Данные таблицы
-        for coin in coins_data:
-            response_text += f"| {coin['priority']}{coin['star']} | {coin['symbol']} | ${coin['price']} | {coin['signal_emoji']} | {coin['rsi']} | ${coin['sma_20']} | {coin['volume_24h']}M | {coin['rrr']} |\n"
-        
-        response_text += "\n**📊 ДЕТАЛИ ТОРГОВЫХ УРОВНЕЙ:**\n\n"
-        
-        # Детальная информация по каждой монете
-        for coin in coins_data:
-            response_text += f"{coin['priority']}{coin['star']} **{coin['symbol']}** {coin['signal_type']}\n"
-            response_text += f"🎯 Вход: ${coin['entry']} | 🛑 Стоп: ${coin['stop_loss']} | 🥇 Цель: ${coin['take_profit_1']}\n\n"
-        
-        # Подготавливаем данные для анализа Gemini с ранжированием
-        prompt = f"""Проанализируй ТОП-3 монеты для скальпинга и ОБЯЗАТЕЛЬНО расставь их по местам:
-
-ДАННЫЕ:
-"""
-        for coin in coins_data:
-            prompt += f"- {coin['symbol']}: RSI={coin['rsi_raw']:.0f}, SMA20=${coin['sma_20']}, Объём={coin['volume_24h']}M, RRR={coin['rrr']}\n"
-        
-        prompt += f"""
-ЗАДАНИЕ:
-1. Расставь монеты 🥇🥈🥉 по привлекательности для скальпинга
-2. Для каждой монеты дай короткий комментарий (1 строка)
-
-Формат ответа (строго):
-🥇 [СИМВОЛ] - [комментарий]
-🥈 [СИМВОЛ] - [комментарий]
-🥉 [СИМВОЛ] - [комментарий]"""
-        
-        # Функция для повторных попыток при ошибках API
-        def try_gemini_analysis_scan(prompt, max_retries=3):
-            models_to_try = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
-            delays = [2, 5, 9]
-            
-            for model in models_to_try:
-                print(f"🔄 Пробуем модель: {model}")
-                for attempt in range(max_retries):
-                    try:
-                        response = gemini_client.models.generate_content(
-                            model=model,
-                            contents=prompt
-                        )
-                        print(f"✅ Gemini успешно ответил (модель: {model}, попытка: {attempt + 1})")
-                        return response
-                    except Exception as e:
-                        error_msg = str(e)
-                        print(f"❌ Ошибка Gemini [модель: {model}, попытка: {attempt + 1}/{max_retries}]: {error_msg}")
-                        
-                        if "503" in error_msg or "unavailable" in error_msg.lower() or "overloaded" in error_msg.lower():
-                            if attempt < max_retries - 1:
-                                delay = delays[attempt]
-                                print(f"⏰ Сервер перегружен, ждем {delay} секунд перед повтором...")
-                                time.sleep(delay)
-                        else:
-                            print(f"⚠️ Ошибка не связана с перегрузкой, пробуем следующую модель")
-                            break
-            
-            print("❌ Все модели Gemini недоступны после всех попыток")
-            return None
-        
-        gemini_response = try_gemini_analysis_scan(prompt)
-        ai_analysis = gemini_response.text if gemini_response and gemini_response.text else "AI анализ временно недоступен"
-        
-        # Добавляем AI анализ
-        response_text += f"🤖 **GEMINI АНАЛИЗ:**\n{ai_analysis}\n\n"
-        
-        # Блок сравнения технического и Gemini выбора
-        tech_top = coins_data[0]['symbol'] if coins_data else ""
-        gemini_top = ""
-        
-        # Извлекаем выбор Gemini (ищем первый символ после 🥇)
-        import re
-        gemini_match = re.search(r'🥇\s*([A-Z]+)', ai_analysis)
-        if gemini_match:
-            gemini_top = gemini_match.group(1)
-        
-        comparison_emoji = "🟢" if tech_top == gemini_top else "🔴"
-        
-        # Пояснение совпадения/различия
-        if tech_top == gemini_top:
-            explanation = "Оба метода выбрали одну монету — сильный сигнал"
-        else:
-            explanation = "Различие может указывать на разные приоритеты анализа"
-        
-        response_text += f"**📊 СРАВНЕНИЕ ВЫБОРОВ:**\n"
-        response_text += f"• Технический анализ: {tech_top}\n"
-        response_text += f"• Gemini выбор: {gemini_top if gemini_top else 'N/A'}\n"
-        response_text += f"• Совпадение: {comparison_emoji} {'Да' if tech_top == gemini_top else 'Нет'}\n"
-        response_text += f"• {explanation}\n\n"
-        
-        response_text += f"⏰ Автообновлено: {time.strftime('%H:%M:%S')}\n"
-        response_text += f"🔄 Следующее обновление через 60 секунд ⚡"
-        
-        # Ограничиваем длину ответа для Telegram
-        max_length = 4000
-        if len(response_text) > max_length:
-            response_text = response_text[:max_length] + "..."
-        
-        bot.send_message(ADMIN_ID, response_text, parse_mode='Markdown')
-        print("✅ Автоматические сигналы отправлены")
-        
-    except Exception as e:
-        print(f"❌ Ошибка автоматического скрининга: {e}")
 
 def generate_enhanced_scalping_signal(coin_data):
     """Улучшенная генерация сигналов на основе 5м данных"""
@@ -1600,161 +1393,102 @@ def auto_scanning_active():
 def get_coin_data_coingecko(symbol, days=7, retry_count=3):
     """Получить исторические данные монеты с CoinGecko API с улучшенной надежностью"""
     try:
-        # Полный CoinGecko mapping для всех поддерживаемых монет
-        coin_id_map = {
-            # Основные монеты
-            'BTC': 'bitcoin', 'ETH': 'ethereum', 'BNB': 'binancecoin', 
-            'ADA': 'cardano', 'SOL': 'solana', 'XRP': 'ripple',
-            'DOGE': 'dogecoin', 'DOT': 'polkadot', 'AVAX': 'avalanche-2',
-            'LINK': 'chainlink', 'LTC': 'litecoin', 'UNI': 'uniswap',
-            'ATOM': 'cosmos', 'XLM': 'stellar', 'VET': 'vechain',
-            'ICP': 'internet-computer', 'FIL': 'filecoin', 'TRX': 'tron',
-            'ETC': 'ethereum-classic', 'AAVE': 'aave', 'SUSHI': 'sushi',
-            'PEPE': 'pepe', 'SHIB': 'shiba-inu', 'MEME': 'memecoin',
-            'BONK': 'bonk', 'FLOKI': 'floki', 'WIF': 'dogwifhat',
-            'NOT': 'notcoin', 'TON': 'the-open-network', 'MATIC': 'matic-network',
-            'NEAR': 'near', 'ALGO': 'algorand', 'HBAR': 'hedera-hashgraph',
-            'QNT': 'quant-network', 'OP': 'optimism', 'ARB': 'arbitrum',
-            'COMP': 'compound-governance-token', 'MKR': 'maker', 'YFI': 'yearn-finance',
-            'CRV': 'curve-dao-token', 'SNX': 'synthetix-network-token', '1INCH': '1inch',
-            'ENJ': 'enjincoin', 'MANA': 'decentraland', 'SAND': 'the-sandbox',
-            'AXS': 'axie-infinity', 'GALA': 'gala', 'CHZ': 'chiliz',
-            'BAT': 'basic-attention-token', 'ZIL': 'zilliqa', 'HOT': 'holo',
-            # Предыдущие дополнения
-            'ETHFI': 'ether-fi', 'ORDI': 'ordi', 'PEOPLE': 'constitutiondao',
-            'DYDX': 'dydx-chain', 'CELO': 'celo', 'STRK': 'starknet',
-            'AI': 'sleepless-ai', 'POL': 'polygon-ecosystem-token', 'IOTX': 'iotex',
-            'CAKE': 'pancakeswap-token', 'LUNC': 'terra-luna-classic', 'BAKE': 'bakerytoken',
-            'SUI': 'sui', 'WLFI': 'world-liberty-financial',
-            # Новые монеты из скриншотов  
-            'PUMP': 'moonpump', 'TAO': 'bittensor', 'ENS': 'ethereum-name-service',
-            'ENA': 'ethena', 'S': 'solidus-aitech', 'INJ': 'injective-protocol',
-            'W': 'wormhole', 'ADX': 'adex', 'ROSE': 'oasis-network', 'USTC': 'terraclassicusd',
-            'SEI': 'sei-network', 'FIDA': 'bonfida', 'PNUT': 'peanut-the-squirrel',
-            'JASMY': 'jasmycoin', 'TURBO': 'turbo', 'EIGEN': 'eigenlayer',
-            'SCR': 'scroll', 'IO': 'io', 'TRB': 'tellor', 'APT': 'aptos',
-            'LDO': 'lido-dao', 'ALT': 'altlayer', 'WLD': 'worldcoin',
-            'BCH': 'bitcoin-cash', 'AEVO': 'aevo', 'ZRX': '0x',
-            'ANKR': 'ankr', 'YGG': 'yield-guild-games', 'XAI': 'xai-games',
-            'ILV': 'illuvium', 'SCRT': 'secret', 'EGLD': 'elrond-erd-2',
-            'JUP': 'jupiter-exchange-solana', 'FET': 'fetch-ai', 'GRT': 'the-graph',
-            'PIXEL': 'pixels', 'IDEX': 'idex', 'DASH': 'dash',
-            'PORTAL': 'portal', 'PROM': 'prometeus', 'VTHO': 'vethor-token',
-            'C98': 'coin98', 'VANRY': 'vanar-chain', 'TIA': 'celestia',
-            'TRUMP': 'maga', 'ID': 'space-id', 'JTO': 'jito-governance-token',
-            'HOOK': 'hooked-protocol', 'MASK': 'mask-network', 'PERP': 'perpetual-protocol',
-            'FXS': 'frax-share', 'MAV': 'maverick-protocol', 'SLP': 'smooth-love-potion',
-            'RVN': 'ravencoin', 'CFX': 'conflux-token', 'MANTA': 'manta-network',
-            'LUNA': 'terra-luna-2'
-        }
-        
-        coin_id = coin_id_map.get(symbol.upper(), symbol.lower())
-        
-        # Улучшенные headers для лучшей совместимости с CoinGecko
+        coin_id = symbol.lower()
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (TradingBot/4.0; +https://replit.com)',
             'Accept': 'application/json',
             'Cache-Control': 'no-cache'
         }
-        
-        # Увеличиваем количество дней для получения достаточных данных
-        days = max(days, 7)  # Минимум неделя данных
-        
-        # Запрос к CoinGecko API с retry логикой
+
+        days = max(days, 7)
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
         params = {
             'vs_currency': 'usd',
             'days': days,
             'interval': 'hourly'
         }
-        
+
         for attempt in range(retry_count):
             try:
                 response = requests.get(url, params=params, headers=headers, timeout=20)
-                
                 if response.status_code == 200:
                     data = response.json()
-                    
                     if 'prices' not in data or len(data['prices']) < 20:
-                        print(f"⚠️ CoinGecko: недостаточно данных для {symbol} (получено {len(data.get('prices', []))})")
+                        print(f"⚠️ CoinGecko: недостаточно данных для {symbol}")
                         return None
-                    
-                    # Создаем DataFrame из данных CoinGecko
+
                     prices = data['prices']
                     volumes = data['total_volumes']
-                    
+
                     df = pd.DataFrame(data=prices, columns=['timestamp', 'close'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     df['volume'] = [v[1] for v in volumes[:len(df)]]
-                    
-                    # Улучшенная аппроксимация OHLC данных
+
                     df = df.sort_values('timestamp').reset_index(drop=True)
                     df['open'] = df['close'].shift(1).fillna(df['close'].iloc[0])
-                    
-                    # Более реалистичная симуляция high/low
+
                     volatility = df['close'].pct_change().std() * 0.5
                     df['high'] = df[['open', 'close']].max(axis=1) * (1 + volatility)
                     df['low'] = df[['open', 'close']].min(axis=1) * (1 - volatility)
-                    
+
                     print(f"✅ CoinGecko: получено {len(df)} точек для {symbol}")
                     return df
-                    
-                elif response.status_code == 429:  # Rate limit
+
+                elif response.status_code == 429:
                     wait_time = 2 ** attempt
-                    print(f"⏳ CoinGecko rate limit, ждем {wait_time}с...")
+                    print(f"⏳ Rate limit CoinGecko, ждем {wait_time}с...")
                     time.sleep(wait_time)
-                elif response.status_code == 401:  # Unauthorized
-                    print(f"❌ CoinGecko API ошибка авторизации для {symbol}: 401")
-                    return None
-                    continue
-                    
-                else:
-                    print(f"❌ CoinGecko API ошибка для {symbol}: {response.status_code}")
-                    if attempt == retry_count - 1:
-                        return None
-                    time.sleep(1)
-                    continue
-                    
+
             except requests.RequestException as e:
-                print(f"⚠️ CoinGecko запрос {attempt+1}/{retry_count} провален: {e}")
-                if attempt < retry_count - 1:
-                    time.sleep(2)
-                    continue
-                return None
-        
+                print(f"⚠️ Ошибка CoinGecko {attempt+1}/{retry_count}: {e}")
+                time.sleep(2)
+
         return None
-        
+
     except Exception as e:
         print(f"❌ Критическая ошибка CoinGecko для {symbol}: {e}")
         return None
 
+
 def get_trending_coins_coingecko():
-    """Получить трендовые монеты с CoinGecko"""
+    """Получить трендовые монеты с CoinGecko (ТОП-10 с ценой и изменениями)"""
     try:
         url = "https://api.coingecko.com/api/v3/search/trending"
         response = requests.get(url, timeout=10)
-        
+
+        trending = []
+
         if response.status_code == 200:
             data = response.json()
-            trending = []
-            
-            for coin in data['coins'][:10]:  # ТОП-10 трендовых
+            for coin in data.get('coins', [])[:10]:
+                item = coin.get('item', {})
+                coin_id = item.get('id', '')
+
+                price_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+                price_resp = requests.get(price_url, timeout=10)
+                price_data = price_resp.json() if price_resp.status_code == 200 else {}
+
+                market_data = price_data.get("market_data", {})
+
                 trending.append({
-                    'symbol': coin['item']['symbol'].upper(),
-                    'name': coin['item']['name'],
-                    'score': coin['item']['score'] if 'score' in coin['item'] else 95,
-                    'source': 'coingecko'
+                    'symbol': item.get('symbol', '').upper(),
+                    'name': item.get('name', 'Unknown'),
+                    'score': item.get('score', 0),
+                    'price': market_data.get("current_price", {}).get("usd", None),
+                    'change_24h': market_data.get("price_change_percentage_24h", None),
+                    'volume': market_data.get("total_volume", {}).get("usd", None),
                 })
-            
+
             return trending
-            
         else:
             print(f"❌ Ошибка получения трендов CoinGecko: {response.status_code}")
             return []
-            
+
     except Exception as e:
         print(f"❌ Ошибка трендов CoinGecko: {e}")
         return []
+
 
 # --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ ДАННЫХ ---
 def get_coin_data(symbol, interval="1h", limit=100, source=None, auto_fallback=True):
@@ -1764,30 +1498,27 @@ def get_coin_data(symbol, interval="1h", limit=100, source=None, auto_fallback=T
     if source is None:
         source = data_source
     
-    # Специальные случаи: монеты, которые торгуются только на определенных биржах
-    mexc_only_coins = ['IP']  # Токены доступные только на MEXC
-    coingecko_only_coins = []  # Временно пустой список
+    # Специальные случаи
+    mexc_only_coins = ['IP']
+    coingecko_only_coins = []
     
     if symbol.upper() in mexc_only_coins:
         source = "mexc"
-        auto_fallback = False  # Не переключаемся на другие источники
+        auto_fallback = False
         print(f"🔄 {symbol} доступен только через MEXC API")
     elif symbol.upper() in coingecko_only_coins:
         source = "coingecko"
-        auto_fallback = False  # Не переключаемся на Binance
+        auto_fallback = False
         print(f"🔄 {symbol} доступен только через CoinGecko API")
     
     original_source = source
-    
-    # Попытка получить данные из основного источника
+
     if source == "coingecko":
         print(f"🔄 Запрашиваю {symbol} из CoinGecko...")
-        
-        # CoinGecko работает с днями, конвертируем интервалы
         days = 1
         if 'h' in interval:
             hours = int(interval.replace('h', ''))
-            days = max(7, (limit * hours) / 24)  # Минимум неделя для достаточного количества данных
+            days = max(7, (limit * hours) / 24)
         elif 'd' in interval:
             days = max(7, int(interval.replace('d', '')) * limit)
         elif 'w' in interval:
@@ -1797,49 +1528,30 @@ def get_coin_data(symbol, interval="1h", limit=100, source=None, auto_fallback=T
             
         df = get_coin_data_coingecko(symbol, days=min(int(days), 365))
         
-        # Проверяем качество данных
         if df is not None and len(df) >= 20:
             print(f"✅ CoinGecko успешно предоставил {len(df)} точек данных для {symbol}")
             return df
         
-        # Автоматический возврат к Binance при проблемах с CoinGecko
         if auto_fallback:
-            print(f"⚠️ CoinGecko не предоставил достаточно данных для {symbol}")
-            print(f"🔄 Автоматический переход на Binance...")
+            print(f"⚠️ CoinGecko не предоставил достаточно данных для {symbol}, переключаюсь на Binance...")
             source = "binance"
         else:
-            print(f"❌ CoinGecko: недостаточно данных для анализа {symbol}")
             return None
     
-    # Получаем данные из MEXC
     if source == "mexc":
         print(f"📊 Получаю {symbol} из MEXC...")
         df = get_mexc_klines(symbol, interval, limit)
-        
         if df is not None and len(df) >= 20:
-            print(f"✅ MEXC предоставил {len(df)} свечей для {symbol}")
             return df
         else:
-            print(f"❌ MEXC не смог предоставить данные для {symbol}")
             return None
     
-    # Получаем данные из Binance (основной или резервный источник)
     if source == "binance":
-        if original_source == "coingecko":
-            print(f"📊 Получаю {symbol} из Binance (резервный источник)...")
-        else:
-            print(f"📊 Получаю {symbol} из Binance...")
-            
+        print(f"📊 Получаю {symbol} из Binance...")
         df = get_coin_klines(symbol, interval, limit)
-        
         if df is not None and len(df) >= 20:
-            if original_source == "coingecko":
-                print(f"✅ Binance успешно предоставил резервные данные: {len(df)} свечей")
-            else:
-                print(f"✅ Binance предоставил {len(df)} свечей для {symbol}")
             return df
         else:
-            print(f"❌ Binance также не смог предоставить данные для {symbol}")
             return None
     
     return None
@@ -2274,6 +1986,7 @@ def send_welcome(message):
     
     bot.reply_to(message, "🚀 **СУПЕР ТОРГОВЫЙ БОТ ГОТОВ!**\n\n📋 Используй /help для полного меню команд\n\n🎯 **Быстрый старт:**\n• `BTC 4h` - график Bitcoin на 4 часа\n• `/scan` - поиск лучших монет сейчас\n• Отправь фото графика для AI анализа")
 
+
 @bot.message_handler(commands=['help', 'menu', 'команды'])
 def help_command(message):
     # Уведомляем администратора о запросе помощи
@@ -2306,8 +2019,13 @@ def help_command(message):
 ├ Отправь фото графика - получи AI анализ
 └ Поддержка любых торговых графиков
 
+💹 **ФЬЮЧЕРС-АНАЛИЗ (НОВОЕ!):**
+├ `/ftrade BTCUSDT 100 2`  
+  → анализ сделки BTCUSDT  
+  → баланс 100 USDT, риск 2%  
+└ Автоматический расчёт: стоп, тейк, позиция, плечо и маржа  
 
-🔄 **ИСТОЧНИКИ ДАННЫХ (НОВОЕ!):**
+🔄 **ИСТОЧНИКИ ДАННЫХ:**
 ├ `/source` - переключить источник (Binance/CoinGecko)
 ├ `/trending` - ТОП трендовые монеты (CoinGecko)
 └ Binance: точность | CoinGecko: 18,000+ монет
@@ -2319,33 +2037,49 @@ def help_command(message):
 
 💡 **ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ:**
 
-🔸 **Быстрый анализ:** `BTC 4h`
-🔸 **Скальпинг:** `XRP 5min` 
-🔸 **Свинг-трейдинг:** `ETH daily`
-🔸 **Поиск сетапов:** `/scan`
-🔸 **Трендовые монеты:** `/trending`
-🔸 **Смена источника:** `/source`
-🔸 **Загрузка графика:** [фото] + описание
+🔸 **Быстрый анализ:** `BTC 4h`  
+🔸 **Скальпинг:** `XRP 5min`  
+🔸 **Свинг-трейдинг:** `ETH daily`  
+🔸 **Поиск сетапов:** `/scan`  
+🔸 **Трендовые монеты:** `/trending`  
+🔸 **Фьючерсы:** /ftrade ETHUSDT 200 1.5  
+🔸 **Смена источника:** `/source`  
+🔸 **Загрузка графика:** [фото] + описание  
 
 ⚡ **РЕЗУЛЬТАТ КАЖДОГО АНАЛИЗА:**
-✅ График с торговыми уровнями
+✅ График с торговыми уровнями  
 ✅ Точки входа и выхода  
-✅ Стоп-лосс и тейк-профит
-✅ Risk/Reward расчет
-✅ AI рекомендации
-✅ Данные из 2+ источников
+✅ Стоп-лосс и тейк-профит  
+✅ Risk/Reward расчет  
+✅ AI рекомендации  
+✅ Данные из 2+ источников  
 
 🎯 **Начни прямо сейчас!** Напиши любую команду выше"""
 
     # Отправляем сообщение и пытаемся закрепить
     try:
         sent_message = bot.send_message(message.chat.id, help_text)
-        # Пытаемся закрепить сообщение
         bot.pin_chat_message(message.chat.id, sent_message.message_id, disable_notification=True)
         bot.send_message(message.chat.id, "📌 Меню команд закреплено!")
     except Exception as e:
         print(f"⚠ Не удалось закрепить сообщение: {e}")
         bot.send_message(message.chat.id, help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!")
+
+
+# --- Фикс опечаток для команды /ftrade ---
+@bot.message_handler(func=lambda message: message.text and message.text.lower().startswith(("/ftraide", "/ftrad", "/ftrdae", "/ftraid")))
+def fix_ftrade_typos(message):
+    corrected = message.text.lower()
+    corrected = corrected.replace("/ftraide", "/ftrade")\
+                         .replace("/ftrdae", "/ftrade")\
+                         .replace("/ftrad", "/ftrade")\
+                         .replace("/ftraid", "/ftrade")
+    
+    print(f"✅ Исправлено: {message.text} → {corrected}")  # Лог в консоль
+
+    # Подменяем текст команды и передаём в основной обработчик
+    message.text = corrected
+    handle_ftrade(message)
 # --- Проверка Binance API ---
 def check_binance_api():
     import requests
@@ -2472,38 +2206,65 @@ def switch_data_source(message):
     
     bot.send_message(message.chat.id, source_info)
 
+# --- Команда /trending ---
 @bot.message_handler(commands=['trending', 'тренды'])
 def get_trending_coins(message):
     # Уведомляем администратора о запросе трендов
     notify_admin_about_user_request(
-        message.from_user.id, 
-        message.from_user.username, 
-        message.from_user.first_name, 
-        "Команда /trending", 
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name,
+        "Команда /trending",
         "/trending"
     )
-    
+
     bot.reply_to(message, "🔥 Ищу самые горячие монеты на CoinGecko...")
-    
+
     try:
         trending = get_trending_coins_coingecko()
-        
+
         if trending:
             trend_text = "🔥 **ТОП ТРЕНДОВЫЕ МОНЕТЫ (CoinGecko)**\n\n"
-            
+            growth_list = []
+
             for i, coin in enumerate(trending, 1):
+                price = f"{coin['price']:.4f} USDT" if isinstance(coin['price'], (int, float)) else "N/A"
+                change = f"{coin['change_24h']:.2f}%" if isinstance(coin['change_24h'], (int, float)) else "N/A"
+                volume = f"{coin['volume']/1_000_000:.1f}M" if isinstance(coin['volume'], (int, float)) else "N/A"
+
                 trend_text += f"{i}. **{coin['symbol']}** ({coin['name']})\n"
-                trend_text += f"   └ Трендовый скор: {coin['score']}/100\n\n"
-            
-            trend_text += "💡 **Для анализа любой монеты напиши:**\n"
+                trend_text += f"   💰 Цена: {price}\n"
+                trend_text += f"   📉 24ч: {change} | Объём: {volume}\n"
+                trend_text += f"   🔥 Трендовый скор: {coin['score']}/100\n"
+                trend_text += f"   💹 Совет: попробуй `/ftrade {coin['symbol']}USDT`\n\n"
+
+                if isinstance(coin['change_24h'], (int, float)):
+                    growth_list.append(coin)
+
+            # ТОП-3 по росту
+            if growth_list:
+                sorted_growth = sorted(growth_list, key=lambda x: x['change_24h'], reverse=True)[:3]
+                trend_text += "📊 **ТОП-3 ПО РОСТУ (24ч):**\n"
+                for j, coin in enumerate(sorted_growth, 1):
+                    change = coin['change_24h']
+                    if change > 20:
+                        leverage = "x5–x10"
+                    elif change > 10:
+                        leverage = "x10–x15"
+                    else:
+                        leverage = "x15–x20"
+
+                    trend_text += f"{j}️⃣ **{coin['symbol']}** {change:.2f}% → ⚡ Совет: /ftrade {coin['symbol']}USDT (плечо {leverage})\n"
+
+            trend_text += "\n💡 Для анализа любой монеты напиши:\n"
             trend_text += "• `[СИМВОЛ] [ТАЙМФРЕЙМ]` (например: BTC 4h)\n"
-            trend_text += "• Или переключи источник на CoinGecko: `/source`"
-            
-            bot.send_message(message.chat.id, trend_text)
-            
+            trend_text += "• Или вызови `/ftrade SYMBOLUSDT` для фьючерс-анализа"
+
+            bot.send_message(message.chat.id, trend_text, parse_mode="Markdown")
+
         else:
             bot.reply_to(message, "❌ Не удалось получить трендовые монеты")
-            
+
     except Exception as e:
         print(f"❌ Ошибка трендов: {e}")
         bot.reply_to(message, f"⚠ Ошибка получения трендов: {e}")
@@ -2870,33 +2631,35 @@ def handle_start_scan_command(message):
 # --- Команда для фьючерс-анализа ---
 @bot.message_handler(commands=['ftrade'])
 def handle_ftrade(message):
-    """
-    Анализ фьючерсной сделки с учетом риска и плеча
-    Формат команды: /ftrade BTCUSDT 100 2
-    Где:
-      - BTCUSDT = тикер пары
-      - 100 = баланс (USDT)
-      - 2 = риск в %
-    """
     try:
         parts = message.text.split()
-        if len(parts) < 4:
+
+        if len(parts) < 2:
             bot.reply_to(message, """⚠️ Неверный формат команды!
 
-✅ Пример:
-`/ftrade BTCUSDT 100 2`
-
-Где:
-- BTCUSDT = пара
-- 100 = баланс USDT
-- 2 = риск %""", parse_mode="Markdown")
+✅ Примеры:
+`/ftrade BTCUSDT` - с настройками по умолчанию
+`/ftrade BTCUSDT 200` - депозит 200 USDT, риск по умолчанию
+`/ftrade BTCUSDT 200 2` - депозит 200 USDT, риск 2%
+""", parse_mode="Markdown")
             return
 
         symbol = parts[1].upper()
-        balance = float(parts[2])
-        risk_percent = float(parts[3])
 
-        # Получаем данные по монете
+        # Берём значения из глобальных настроек
+        deposit = FUTURES_SETTINGS["deposit"]
+        risk_percent = FUTURES_SETTINGS["risk_percent"]
+
+        # Если пользователь ввёл депозит
+        if len(parts) >= 3:
+            deposit = float(parts[2])
+
+        # Если ввёл риск %
+        if len(parts) >= 4:
+            risk_percent = float(parts[3])
+
+        # Теперь у нас всегда есть symbol, deposit, risk_percent
+        # --- Дальше твоя логика анализа (как в старом коде) ---
         df = get_coin_data(symbol.replace("USDT", ""), interval="15m", limit=100)
         if df is None or df.empty:
             bot.reply_to(message, f"❌ Не удалось получить данные по {symbol}")
@@ -2905,7 +2668,7 @@ def handle_ftrade(message):
         closes = df['close'].tolist()
         last_price = closes[-1]
 
-        # ATR как индикатор волатильности
+        # ATR для волатильности
         def calc_atr(data, period=14):
             trs = []
             for i in range(1, len(data)):
@@ -2918,27 +2681,27 @@ def handle_ftrade(message):
 
         atr = calc_atr(df)
 
-        # Рассчёт допустимой суммы риска
-        risk_amount = balance * (risk_percent / 100)
+        # Сумма риска
+        risk_amount = deposit * (risk_percent / 100)
 
-        # Стоп на основе ATR (2хATR)
+        # Стоп и тейк (2хATR)
         stop_loss = last_price - 2 * atr
         take_profit = last_price + 2 * atr
 
         # Размер позиции
         pos_size = risk_amount / (last_price - stop_loss)
 
-        # Подбор оптимального плеча
+        # Плечо
         leverage = 1
-        while (pos_size * last_price) / leverage > balance * 0.2 and leverage < 50:
+        while (pos_size * last_price) / leverage > deposit * 0.2 and leverage < 50:
             leverage += 1
 
         margin = (pos_size * last_price) / leverage
 
-        # Формируем ответ
+        # Ответ
         reply = f"""📊 **Фьючерс-анализ {symbol}**
 
-💰 Баланс: {balance:.2f} USDT
+💰 Баланс: {deposit:.2f} USDT
 ⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)
 
 📈 Цена входа: {last_price:.2f}
@@ -2948,14 +2711,92 @@ def handle_ftrade(message):
 📊 Размер позиции: {pos_size:.3f} {symbol.replace("USDT","")}
 ⚡ Плечо: x{leverage}
 💵 Маржа: {margin:.2f} USDT
-
-❗ Торгуй ответственно, фьючерсы = высокий риск.
 """
         bot.reply_to(message, reply, parse_mode="Markdown")
 
     except Exception as e:
         print(f"❌ Ошибка в ftrade: {e}")
         bot.reply_to(message, f"⚠ Ошибка: {e}")
+
+@bot.message_handler(commands=['futurescan'])
+def handle_futurescan(message):
+    """
+    Подбирает оптимальные монеты для торговли фьючерсами
+    и показывает рекомендации по плечу и риску.
+    """
+    try:
+        bot.reply_to(message, "🔍 Ищу лучшие монеты для торговли фьючерсами...\n⏳ Это может занять несколько секунд")
+
+        # Получаем лучшие монеты для скальпинга (твой же сканер)
+        top_coins = screen_best_coins_for_scalping()
+        if not top_coins:
+            bot.reply_to(message, "❌ Не удалось получить данные рынка для фьючерс-анализа")
+            return
+
+        # Берём топ-3
+        top_3 = top_coins[:3]
+        results = []
+
+        for coin in top_3:
+            symbol = coin['symbol']
+            df = get_coin_data(symbol.replace("USDT", ""), interval="15m", limit=100)
+            if df is None or df.empty:
+                continue
+
+            closes = df['close'].tolist()
+            last_price = closes[-1]
+
+            # ATR для расчёта стопа/тейка
+            def calc_atr(data, period=14):
+                trs = []
+                for i in range(1, len(data)):
+                    high = df['high'].iloc[i]
+                    low = df['low'].iloc[i]
+                    prev_close = df['close'].iloc[i-1]
+                    tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
+                    trs.append(tr)
+                return sum(trs[-period:]) / period if len(trs) >= period else 0
+
+            atr = calc_atr(df)
+
+            # --- Берём глобальные настройки
+            deposit = FUTURES_SETTINGS["deposit"]
+            risk_percent = FUTURES_SETTINGS["risk_percent"]
+            risk_amount = deposit * (risk_percent / 100)
+
+            # Стоп и тейк
+            stop_loss = last_price - 2 * atr
+            take_profit = last_price + 2 * atr
+
+            # Размер позиции
+            pos_size = risk_amount / (last_price - stop_loss)
+
+            # Автоподбор плеча
+            leverage = 1
+            while (pos_size * last_price) / leverage > deposit * 0.2 and leverage < 50:
+                leverage += 1
+
+            margin = (pos_size * last_price) / leverage
+
+            results.append(f"""💹 **{symbol}**
+📈 Цена: {last_price:.2f}
+🛑 SL: {stop_loss:.2f} | 🎯 TP: {take_profit:.2f}
+⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)
+📊 Позиция: {pos_size:.2f} {symbol.replace("USDT","")}
+⚡ Плечо: x{leverage} | 💵 Маржа: {margin:.2f} USDT
+""")
+
+        if not results:
+            bot.reply_to(message, "❌ Не удалось рассчитать фьючерсные рекомендации")
+            return
+
+        reply_text = "📊 **ТОП-3 РЕКОМЕНДАЦИИ ДЛЯ ФЬЮЧЕРСОВ:**\n\n" + "\n".join(results)
+        bot.send_message(message.chat.id, reply_text, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"❌ Ошибка в futurescan: {e}")
+        bot.reply_to(message, f"⚠ Ошибка в futurescan: {e}")
+
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
