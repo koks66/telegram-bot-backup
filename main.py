@@ -2710,9 +2710,9 @@ def handle_ftrade(message):
         deposit = float(args[2])
         risk_percent = float(args[3]) if len(args) > 3 else 2
         timeframe = args[4] if len(args) > 4 else "1h"
-        mode = args[5].lower() if len(args) > 5 else "swing"
+        mode = args[5].lower() if len(args) > 5 else "swing"  # swing или scalp
 
-        # --- Получение данных ---
+        # Получаем данные
         df = get_coin_data(symbol.replace("USDT", ""), interval=timeframe, limit=200)
         if df is None or len(df) < 20:
             bot.reply_to(message, f"❌ Недостаточно данных для {symbol} ({timeframe})")
@@ -2725,7 +2725,7 @@ def handle_ftrade(message):
         df["EMA50"] = df["close"].ewm(span=50).mean()
         rsi = calculate_rsi(df["close"], 14).iloc[-1]
 
-        # --- ATR ---
+        # --- ATR для стоп/тейка ---
         atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
         if mode == "scalp":
             stop_loss = last_price - 1.0 * atr
@@ -2734,7 +2734,7 @@ def handle_ftrade(message):
             stop_loss = last_price - 1.5 * atr
             take_profit = last_price + 2.5 * atr
 
-        entry_zone = f"{last_price*0.998:.4f} – {last_price*1.002:.4f}"
+        entry_zone = (last_price*0.998, last_price*1.002)
 
         # --- Расчёт позиции ---
         risk_amount = deposit * (risk_percent / 100)
@@ -2744,6 +2744,7 @@ def handle_ftrade(message):
         leverage = 1
         while (pos_size * last_price) / leverage > deposit * 0.25 and leverage < 50:
             leverage += 1
+
         margin = (pos_size * last_price) / leverage if leverage > 0 else 0
 
         # --- RRR ---
@@ -2761,9 +2762,9 @@ def handle_ftrade(message):
         # --- Авто-сигнал ---
         signal_note = ""
         if rsi < 30:
-            signal_note = "🟢 RSI < 30 → возможный лонг!"
+            signal_note = "🟢 RSI ниже 30 → возможный лонг!"
         elif rsi > 70:
-            signal_note = "🔴 RSI > 70 → возможный шорт!"
+            signal_note = "🔴 RSI выше 70 → возможный шорт!"
         elif rrr > 2:
             signal_note = "⚡ Высокое RRR, сделка перспективная!"
 
@@ -2774,12 +2775,13 @@ def handle_ftrade(message):
         plt.plot(df["timestamp"], df["EMA20"], label="EMA20", color="orange")
         plt.plot(df["timestamp"], df["EMA50"], label="EMA50", color="purple")
 
-        # Зоны
-        plt.axhline(stop_loss, color="red", linestyle="--", label="Stop")
-        plt.axhline(take_profit, color="green", linestyle="--", label="Take")
-        plt.axhline(last_price, color="yellow", linestyle="--", label="Entry")
-
-        plt.fill_between(df["timestamp"], stop_loss, take_profit, color="gray", alpha=0.1)
+        # --- Зоны на графике ---
+        plt.fill_between(df["timestamp"], stop_loss*0.999, stop_loss*1.001,
+                         color="red", alpha=0.3, label="Stop")
+        plt.fill_between(df["timestamp"], entry_zone[0], entry_zone[1],
+                         color="yellow", alpha=0.3, label="Entry")
+        plt.fill_between(df["timestamp"], take_profit*0.999, take_profit*1.001,
+                         color="green", alpha=0.3, label="Take")
 
         plt.title(f"{symbol} {timeframe} Анализ")
         plt.xlabel("Время")
@@ -2790,7 +2792,7 @@ def handle_ftrade(message):
         plt.savefig(buf, format="png")
         buf.seek(0)
 
-        # --- Подпись ---
+        # --- Отправляем пользователю ---
         caption = (
             f"📊 **Фьючерс-анализ {symbol} ({timeframe})**\n\n"
             f"💰 Баланс: {deposit:.2f} USDT\n"
@@ -2811,23 +2813,22 @@ def handle_ftrade(message):
         bot.send_photo(message.chat.id, buf, caption=caption, parse_mode="Markdown")
         buf.close()
 
-        # --- Сохранение сетапа в JSON ---
+        # --- Сохранение сетапа в JSON (без bool) ---
         setup = {
             "symbol": symbol,
             "timeframe": timeframe,
             "deposit": deposit,
             "risk_percent": risk_percent,
-            "price": float(last_price),
-            "stop_loss": float(stop_loss),
-            "take_profit": float(take_profit),
-            "rrr": float(rrr),
-            "position_size": float(pos_size),
-            "leverage": int(leverage),
-            "margin": float(margin),
-            "rsi": float(rsi),
-            "ema20": float(df["EMA20"].iloc[-1]),
-            "ema50": float(df["EMA50"].iloc[-1]),
-            "trend_up": bool(df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1])
+            "price": last_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "rrr": round(rrr, 2),
+            "position_size": round(pos_size, 3),
+            "leverage": leverage,
+            "margin": round(margin, 2),
+            "rsi": round(float(rsi), 2),
+            "ema20": round(float(df["EMA20"].iloc[-1]), 4),
+            "ema50": round(float(df["EMA50"].iloc[-1]), 4)
         }
         with open("ftrade_setup.json", "w") as f:
             json.dump(setup, f, indent=4)
