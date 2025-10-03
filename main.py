@@ -24,7 +24,8 @@ from datetime import datetime, timedelta
 import io
 from pytz import timezone
 import io
-
+# --- Глобальные переменные ---
+AUTO_SCAN_CHAT_ID = None
 app = Flask(__name__)
 
 # --- Загружаем секреты из Replit ---
@@ -2722,23 +2723,121 @@ def handle_scan_command(message):
     except Exception as e:
         print(f"❌ Ошибка скрининга: {e}")
         bot.reply_to(message, f"⚠ Ошибка скрининга: {e}")
+def auto_send_scalping_signals():
+    global AUTO_SCAN_CHAT_ID
+    try:
+        if not AUTO_SCAN_CHAT_ID:
+            print("⚠️ AUTO_SCAN_CHAT_ID не задан, пропускаем авто-скан.")
+            return
 
+        print("🔍 Авто-скан: анализируем рынок...")
+        top_coins = screen_best_coins_for_scalping()
+        if not top_coins:
+            bot.send_message(AUTO_SCAN_CHAT_ID, "❌ Не удалось получить данные рынка (автоскан).")
+            return
+
+        # Берем ТОП-3
+        top_3_coins = top_coins[:3]
+        coins_data = []
+        medals = ["🥇", "🥈", "🥉"]
+
+        for i, coin in enumerate(top_3_coins):
+            signal = generate_scalping_signal(coin)
+            if not signal:
+                continue
+
+            # RSI + SMA
+            klines_data = get_binance_klines(signal['symbol'], "5m", 50)
+            rsi = 50
+            sma_20 = signal['current_price']
+            if klines_data and len(klines_data) >= 20:
+                closes = [k['close'] for k in klines_data]
+
+                def calc_rsi(prices, period=14):
+                    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+                    gains = [d if d > 0 else 0 for d in deltas]
+                    losses = [-d if d < 0 else 0 for d in deltas]
+                    avg_gain = sum(gains[:period]) / period
+                    avg_loss = sum(losses[:period]) / period
+                    if avg_loss == 0:
+                        return 100
+                    rs = avg_gain / avg_loss
+                    return 100 - (100 / (1 + rs))
+
+                rsi = calc_rsi(closes)
+                sma_20 = sum(closes[-20:]) / 20
+
+            signal_emoji = "🟢" if "LONG" in signal['signal_type'] else "🔴"
+
+            coins_data.append({
+                'priority': medals[i],
+                'symbol': signal['symbol'],
+                'price': f"{signal['current_price']:.4f}" if signal['current_price'] < 1 else f"{signal['current_price']:.2f}",
+                'signal_type': signal['signal_type'],
+                'signal_emoji': signal_emoji,
+                'rsi': f"{rsi:.0f}",
+                'sma_20': f"{sma_20:.4f}" if sma_20 < 1 else f"{sma_20:.2f}",
+                'rrr': signal['rrr'],
+                'entry': f"{signal['entry']:.4f}" if signal['entry'] < 1 else f"{signal['entry']:.2f}",
+                'stop_loss': f"{signal['stop_loss']:.4f}" if signal['stop_loss'] < 1 else f"{signal['stop_loss']:.2f}",
+                'take_profit_1': f"{signal['take_profit_1']:.4f}" if signal['take_profit_1'] < 1 else f"{signal['take_profit_1']:.2f}",
+            })
+
+        # Лучшая сделка
+        best_coin = coins_data[0]['symbol'] if coins_data else None
+
+        # Формируем текст
+        from pytz import timezone
+        kyiv_time = datetime.now(timezone("Europe/Kiev"))
+
+        text = f"🔥 ЛУЧШАЯ СДЕЛКА: {best_coin} ⭐\n\n"
+        text += "🎯 ТОП-3 ЛУЧШИЕ МОНЕТЫ ДЛЯ СКАЛЬПИНГА СЕЙЧАС:\n\n"
+
+        text += "| Ранг | Монета | Цена | Сигнал | RSI | SMA20 | RRR |\n"
+        text += "|------|--------|------|--------|-----|-------|-----|\n"
+
+        for coin in coins_data:
+            text += f"| {coin['priority']} | {coin['symbol']} | ${coin['price']} | {coin['signal_emoji']} | {coin['rsi']} | ${coin['sma_20']} | {coin['rrr']} |\n"
+
+        text += "\n📊 ДЕТАЛИ ТОРГОВЫХ УРОВНЕЙ:\n\n"
+
+        for coin in coins_data:
+            text += f"{coin['priority']} {coin['symbol']} {coin['signal_type']}\n"
+            text += f"🎯 Вход: ${coin['entry']} | 🛑 Стоп: ${coin['stop_loss']} | 🥇 Цель: ${coin['take_profit_1']}\n\n"
+
+        text += f"⏰ Автообновлено: {kyiv_time.strftime('%H:%M:%S')}"
+
+        bot.send_message(AUTO_SCAN_CHAT_ID, text, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"❌ Ошибка авто-скана: {e}")
+        if AUTO_SCAN_CHAT_ID:
+            bot.send_message(AUTO_SCAN_CHAT_ID, f"⚠ Ошибка авто-скана: {e}")
 @bot.message_handler(commands=['start_scan'])
 def handle_start_scan_command(message):
+    global AUTO_SCAN_CHAT_ID
+    AUTO_SCAN_CHAT_ID = message.chat.id  # запоминаем чат, куда слать авто-скан
+
     # Уведомляем администратора о запуске автоскрининга
     notify_admin_about_user_request(
-        message.from_user.id, 
-        message.from_user.username, 
-        message.from_user.first_name, 
-        "Команда /start_scan", 
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name,
+        "Команда /start_scan",
         "/start_scan"
     )
-    
+
     try:
         # Проверяем, запущен ли уже скрининг
         job = scheduler.get_job('auto_scalping_scan')
         if job:
-            bot.reply_to(message, "✅ **АВТОСКРИНИНГ УЖЕ РАБОТАЕТ!**\n\n⚡ Сигналы приходят каждые 60 секунд\n🔄 Анализируются ТОП монеты по объёму\n📊 Отправляются ТОП-3 с RRR ≥ 1.5")
+            bot.reply_to(
+                message,
+                "✅ **АВТОСКРИНИНГ УЖЕ РАБОТАЕТ!**\n\n"
+                "⚡ Сигналы приходят каждые 60 секунд\n"
+                "🔄 Анализируются ТОП монеты по объёму\n"
+                "📊 Отправляются ТОП-3 с RRR ≥ 1.5"
+            )
         else:
             # Запускаем скрининг заново
             scheduler.add_job(
@@ -2747,7 +2846,15 @@ def handle_start_scan_command(message):
                 seconds=60,
                 id='auto_scalping_scan'
             )
-            bot.reply_to(message, "🚀 **АВТОСКРИНИНГ ЗАПУЩЕН!**\n\n⚡ Теперь каждые 60 секунд получаешь:\n🎯 ТОП-3 монеты с RRR ≥ 1.5\n📊 RSI, SMA, объёмы и RRR анализ\n🤖 Gemini анализ и рекомендации\n\n✅ Первые сигналы придут через 60 секунд!")
+            bot.reply_to(
+                message,
+                "🚀 **АВТОСКРИНИНГ ЗАПУЩЕН!**\n\n"
+                "⚡ Теперь каждые 60 секунд получаешь:\n"
+                "🎯 ТОП-3 монеты с RRR ≥ 1.5\n"
+                "📊 RSI, SMA, объёмы и RRR анализ\n"
+                "🤖 Gemini анализ и рекомендации\n\n"
+                "✅ Первые сигналы придут через 60 секунд!"
+            )
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка запуска: {e}")
 
