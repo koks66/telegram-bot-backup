@@ -25,7 +25,17 @@ import io
 from pytz import timezone
 import io
 # --- Глобальные переменные ---
-AUTO_SCAN_CHAT_ID = None
+
+# Чат, куда бот шлет авто-скан
+AUTO_SCAN_CHAT_ID = None  
+
+# --- Глобальные переменные для фьючерс-анализа ---
+FUTURES_SETTINGS = {
+    "deposit": 100,   # USDT
+    "risk_percent": 1, # риск 1% от депозита
+    "rrr": 2          # риск/прибыль 1:2
+}
+
 app = Flask(__name__)
 
 # --- Загружаем секреты из Replit ---
@@ -2857,7 +2867,95 @@ def handle_start_scan_command(message):
             )
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка запуска: {e}")
+# --- Команда для фьючерс-анализа ---
+@bot.message_handler(commands=['ftrade'])
+def handle_ftrade(message):
+    """
+    Анализ фьючерсной сделки с учетом риска и плеча
+    Формат команды: /ftrade BTCUSDT 100 2
+    Где:
+      - BTCUSDT = тикер пары
+      - 100 = баланс (USDT)
+      - 2 = риск в %
+    """
+    try:
+        parts = message.text.split()
+        if len(parts) < 4:
+            bot.reply_to(message, """⚠️ Неверный формат команды!
 
+✅ Пример:
+`/ftrade BTCUSDT 100 2`
+
+Где:
+- BTCUSDT = пара
+- 100 = баланс USDT
+- 2 = риск %""", parse_mode="Markdown")
+            return
+
+        symbol = parts[1].upper()
+        balance = float(parts[2])
+        risk_percent = float(parts[3])
+
+        # Получаем данные по монете
+        df = get_coin_data(symbol.replace("USDT", ""), interval="15m", limit=100)
+        if df is None or df.empty:
+            bot.reply_to(message, f"❌ Не удалось получить данные по {symbol}")
+            return
+
+        closes = df['close'].tolist()
+        last_price = closes[-1]
+
+        # ATR как индикатор волатильности
+        def calc_atr(data, period=14):
+            trs = []
+            for i in range(1, len(data)):
+                high = df['high'].iloc[i]
+                low = df['low'].iloc[i]
+                prev_close = df['close'].iloc[i-1]
+                tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
+                trs.append(tr)
+            return sum(trs[-period:]) / period if len(trs) >= period else 0
+
+        atr = calc_atr(df)
+
+        # Рассчёт допустимой суммы риска
+        risk_amount = balance * (risk_percent / 100)
+
+        # Стоп на основе ATR (2хATR)
+        stop_loss = last_price - 2 * atr
+        take_profit = last_price + 2 * atr
+
+        # Размер позиции
+        pos_size = risk_amount / (last_price - stop_loss)
+
+        # Подбор оптимального плеча
+        leverage = 1
+        while (pos_size * last_price) / leverage > balance * 0.2 and leverage < 50:
+            leverage += 1
+
+        margin = (pos_size * last_price) / leverage
+
+        # Формируем ответ
+        reply = f"""📊 **Фьючерс-анализ {symbol}**
+
+💰 Баланс: {balance:.2f} USDT
+⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)
+
+📈 Цена входа: {last_price:.2f}
+🛑 Стоп-лосс: {stop_loss:.2f}
+🎯 Тейк-профит: {take_profit:.2f}
+
+📊 Размер позиции: {pos_size:.3f} {symbol.replace("USDT","")}
+⚡ Плечо: x{leverage}
+💵 Маржа: {margin:.2f} USDT
+
+❗ Торгуй ответственно, фьючерсы = высокий риск.
+"""
+        bot.reply_to(message, reply, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"❌ Ошибка в ftrade: {e}")
+        bot.reply_to(message, f"⚠ Ошибка: {e}")
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
