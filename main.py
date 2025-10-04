@@ -2868,6 +2868,7 @@ def handle_ftrade(message):
 
 
 
+
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
@@ -2891,435 +2892,333 @@ def handle_stop_scan_command(message):
         bot.reply_to(message, f"❌ Ошибка остановки: {e}")
 
 
-# --- Обработка личных сообщений (можно кидать свои графики) ---
+# --- Команда /chart ---
+@bot.message_handler(commands=['chart'])
+def handle_chart(message):
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            bot.reply_to(
+                message,
+                "⚠ Использование: `/chart SYMBOLUSDT [таймфрейм]`\n\n"
+                "Пример: `/chart BTCUSDT 15m`",
+                parse_mode="Markdown"
+            )
+            return
+
+        symbol = args[1].upper()
+        timeframe = args[2] if len(args) > 2 else "1h"
+
+        # --- Данные
+        df = get_coin_data(symbol.replace("USDT", ""), interval=timeframe, limit=200)
+        if df is None or len(df) < 20:
+            bot.reply_to(message, f"❌ Недостаточно данных для {symbol} ({timeframe})")
+            return
+
+        last_price = df["close"].iloc[-1]
+
+        # --- Индикаторы
+        df["EMA20"] = df["close"].ewm(span=20).mean()
+        df["EMA50"] = df["close"].ewm(span=50).mean()
+        rsi = calculate_rsi(df["close"], 14).iloc[-1]
+
+        # ATR для стоп/тейков
+        atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
+        stop_loss = last_price - 1.0 * atr
+        tp1 = last_price + 1.5 * atr
+        tp2 = last_price + 2.0 * atr
+
+        # --- RRR
+        reward = abs(tp1 - last_price)
+        risk = abs(last_price - stop_loss)
+        rrr = reward / risk if risk > 0 else 0
+        if rrr < 1:
+            rrr_status = "⚠ Плохое"
+        elif rrr < 2:
+            rrr_status = "⚠ Среднее"
+        else:
+            rrr_status = "✅ Отличное"
+
+        # --- Определяем направление
+        if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] and rsi > 50:
+            direction = "LONG"
+            direction_icon = "🟢"
+            trend_text = "📈 Восходящий"
+        elif df["EMA20"].iloc[-1] < df["EMA50"].iloc[-1] and rsi < 50:
+            direction = "SHORT"
+            direction_icon = "🔴"
+            trend_text = "📉 Нисходящий"
+        else:
+            direction = "NEUTRAL"
+            direction_icon = "⚪"
+            trend_text = "➡ Боковой"
+
+        # --- FVG зоны
+        fvg_zones = detect_fvg(df)
+        price_range_low = last_price * 0.97
+        price_range_high = last_price * 1.03
+        near_fvg = [fvg for fvg in fvg_zones if fvg.get("low") and fvg.get("high")
+                    and price_range_low <= fvg["high"] and fvg["low"] <= price_range_high]
+
+        last_3_fvg = near_fvg[-3:] if len(near_fvg) > 3 else near_fvg
+        last_7_fvg = near_fvg[-7:] if len(near_fvg) > 7 else near_fvg
+
+        # --- График
+        buf = io.BytesIO()
+        plt.figure(figsize=(13, 7))
+        plt.plot(df["timestamp"], df["close"], label="Цена", color="blue")
+        plt.plot(df["timestamp"], df["EMA20"], label="EMA20", color="orange")
+        plt.plot(df["timestamp"], df["EMA50"], label="EMA50", color="purple")
+
+        plt.axhspan(last_price*0.998, last_price*1.002, color="yellow", alpha=0.3, label="Entry Zone")
+        plt.axhspan(stop_loss*0.998, stop_loss*1.002, color="red", alpha=0.3, label="Stop Zone")
+        plt.axhspan(tp1*0.998, tp1*1.002, color="limegreen", alpha=0.3, label="TP1 Zone")
+        plt.axhspan(tp2*0.998, tp2*1.002, color="darkgreen", alpha=0.3, label="TP2 Zone")
+
+        for idx, fvg in enumerate(last_3_fvg, 1):
+            low, high = fvg["low"], fvg["high"]
+            color = "green" if fvg.get("type") == "Bullish" else "red"
+            plt.axhspan(low, high, color=color, alpha=0.25)
+            text_label = f"{fvg.get('type')} {low:.4f} → {high:.4f}"
+            plt.text(df["timestamp"].iloc[-1], (low+high)/2, text_label,
+                     color=color, fontsize=8, va="center", ha="left")
+
+        plt.title(f"{symbol} {timeframe} Анализ", fontsize=12)
+        plt.xlabel("Время")
+        plt.ylabel("Цена")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+
+        # --- Текстовый отчёт
+        caption = (
+            f"📊 {symbol} {timeframe}\n\n"
+            f"{direction_icon} {direction} | {trend_text}\n\n"
+            f"💰 Цена: {last_price:.3f}\n"
+            f"🛑 Стоп-лосс: {stop_loss:.3f}\n"
+            f"🎯 TP1: {tp1:.3f}\n"
+            f"🎯 TP2: {tp2:.3f}\n"
+            f"📐 RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
+            f"📐 RSI: {rsi:.2f}\n"
+            f"🧮 EMA20: {df['EMA20'].iloc[-1]:.3f} | EMA50: {df['EMA50'].iloc[-1]:.3f}\n\n"
+        )
+
+        if last_7_fvg:
+            caption += f"✅ Ближайшие FVG зоны ({len(last_7_fvg)}):\n"
+            for idx, fvg in enumerate(last_7_fvg, 1):
+                caption += f"{'🟢' if fvg.get('type')=='Bullish' else '🔴'} " \
+                           f"FVG{idx} {fvg.get('type')} {fvg['low']:.4f} → {fvg['high']:.4f}\n"
+
+        caption += "\nℹ️ Зоны: Entry (жёлтая), Stop (красная), TP1/TP2 (зелёные), FVG (зелёные/красные)"
+
+        bot.send_photo(message.chat.id, buf, caption=caption, parse_mode="Markdown")
+        buf.close()
+
+    except Exception as e:
+        print(f"❌ Ошибка в /chart: {e}")
+        bot.reply_to(message, f"⚠ Ошибка в /chart: {e}")
+
+
+
+
+
+# --- Обработка личных сообщений (анализ монет / ссылки TradingView / фото) ---
 @bot.message_handler(content_types=['text', 'photo', 'document'])
 def handle_private_messages(message):
     try:
-        # Проверяем наличие фото для анализа
-        if message.photo:
-            # Уведомляем администратора о загрузке фото
-            notify_admin_about_user_request(
-                message.from_user.id, 
-                message.from_user.username, 
-                message.from_user.first_name, 
-                "Анализ фото графика", 
-                message.caption or "Фото без подписи"
-            )
-            print("📸 Получено фото графика для анализа")
-            # Получаем самое высокое качество фото
-            photo = message.photo[-1]
-            file_info = bot.get_file(photo.file_id)
-            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-            
-            # Скачиваем фото
-            photo_response = requests.get(file_url)
-            
-            if photo_response.status_code == 200:
-                # Анализируем фото через Gemini
-                caption = message.caption or "Анализ торгового графика"
-                
-                prompt = f"""Анализ торгового графика. {caption}
+        if message.text:
+            user_input = message.text.strip()
+            print(f"🔍 DEBUG: Получен текст: {user_input}")
 
-АНАЛИЗ ГРАФИКА:
-🔍 Тренд: [восходящий/нисходящий/боковой]
-📊 Уровни: [цифры]
-📈 Вход: [точка] 
-🛑 Стоп: [уровень]
-🎯 Цели: [уровни]
-⚖️ Итоговый риск: [1-10]
-
-ФАКТЫ ТОЛЬКО!"""
-                
-                # Сохраняем изображение как base64 и используем систему повторных попыток
-                import base64
-                import time
-                base64_image = base64.b64encode(photo_response.content).decode('utf-8')
-                
-                # Функция для повторных попыток при перегрузке API (такая же как в канальных сообщениях)
-                def try_gemini_analysis_private(prompt, image_data, max_retries=3):
-                    models_to_try = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-exp"]
-                    
-                    for model in models_to_try:
-                        for attempt in range(max_retries):
-                            try:
-                                print(f"🤖 Попытка {attempt + 1}/{max_retries} с моделью {model}")
-                                response = gemini_client.models.generate_content(
-                                    model=model,
-                                    contents=[
-                                        {
-                                            "parts": [
-                                                {"text": prompt},
-                                                {
-                                                    "inline_data": {
-                                                        "mime_type": "image/jpeg",
-                                                        "data": image_data
-                                                    }
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                )
-                                print(f"✅ Успешный анализ с моделью {model}")
-                                return response
-                            except Exception as e:
-                                print(f"❌ Ошибка с моделью {model}, попытка {attempt + 1}: {e}")
-                                if "503" in str(e) or "overloaded" in str(e).lower():
-                                    # Экспоненциальная задержка при перегрузке
-                                    delay = (2 ** attempt) + 1  # 2, 5, 9 секунд
-                                    print(f"⏰ Ждем {delay} секунд...")
-                                    time.sleep(delay)
-                                else:
-                                    # Другие ошибки - пробуем следующую модель
-                                    break
-                    
-                    # Если все модели не сработали
-                    return None
-                
-                response = try_gemini_analysis_private(prompt, base64_image)
-                
-                if response and response.text:
-                    ai_reply = response.text
-                    print("✅ Получен анализ от Gemini для личного сообщения")
-                else:
-                    # График Bitcoin - уровни видны из изображения
-                    ai_reply = """⚠️ **СЕРВИС ВРЕМЕННО ПЕРЕГРУЖЕН**
-
-Все AI модели сейчас недоступны из-за высокой нагрузки.
-
-📊 **Краткий анализ вашего графика:**
-🪙 Bitcoin (BTC/USDT)
-🔍 Тренд: Восходящий с коррекцией 
-📊 Текущий уровень: ~$103,000
-📈 Поддержка: $100,000
-🎯 Сопротивление: $105,000
-⚖️ Риск: Средний (5/10)
-
-💡 **Рекомендация:** 
-Дождитесь пробоя или отскока от ключевых уровней.
-
-🔄 Попробуйте отправить график через несколько минут для полного AI-анализа."""
-                    print("❌ Все модели Gemini недоступны для личного сообщения")
-                
-                # Ограничиваем длину ответа для Telegram (максимум 4000 символов)
-                max_length = 4000
-                if len(ai_reply) > max_length:
-                    ai_reply = ai_reply[:max_length] + "..."
-                
-                bot.reply_to(message, f"📊 AI Анализ графика (Gemini Vision):\n\n{ai_reply}")
-            else:
-                bot.reply_to(message, "❌ Не удалось загрузить фото. Попробуй еще раз.")
-                
-        # Обработка текстовых сообщений
-        elif message.text or message.caption:
-            user_input = message.text or message.caption
-            print(f"🔍 DEBUG: Получен текст в личном сообщении: {user_input[:200]}...")
-            
-            # ПРИОРИТЕТ: Сначала проверяем наличие ссылок TradingView
-            import re
-            tradingview_links = re.findall(r'https?://(?:www\.)?tradingview\.com[^\s]*', user_input)
-            print(f"🔍 DEBUG: Найдено ссылок TradingView в личном сообщении: {len(tradingview_links)}")
-            
-            if tradingview_links:
-                print("🎯 ПРИОРИТЕТ: Анализируем ссылку TradingView в личном сообщении")
-                # Обрабатываем ссылку TradingView
-                for link in tradingview_links:
-                    try:
-                        symbol, timeframe = parse_tradingview_link(link)
-                        if symbol == "SHORT_LINK":
-                            # Сокращенная ссылка - просим полную ссылку
-                            bot.reply_to(message, """📎 **Сокращенная ссылка TradingView обнаружена!**
-
-❌ К сожалению, я не могу анализировать короткие ссылки вида `/x/`, потому что они не содержат информацию о символе криптовалюты.
-
-✅ **Решение:**
-1. Откройте ссылку в TradingView
-2. Скопируйте полную ссылку из адресной строки браузера  
-3. Отправьте мне полную ссылку
-
-🔗 **Пример полной ссылки:**
-`https://tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT`
-
-Или просто напишите символ монеты (например: `BTC 4h`)""")
-                            return
-                        elif symbol:
-                            print(f"📊 Анализирую {symbol} ({timeframe}) из ссылки TradingView в личном сообщении")
-                            
-                            analysis_result = analyze_symbol_from_tradingview(symbol, timeframe, user_input, link)
-                            
-                            if analysis_result:
-                                # Проверяем, есть ли график
-                                if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
-                                    chart_text, chart_buffer = analysis_result
-                                    # Отправляем график с анализом
-                                    chart_buffer.seek(0)
-                                    caption_text = f"📈 **АНАЛИЗ ПО ССЫЛКЕ TRADINGVIEW**\n\n🪙 {symbol}\n⏰ {timeframe}\n\n{chart_text[:600]}..."
-                                    bot.send_photo(message.chat.id, chart_buffer, 
-                                                 caption=safe_caption(caption_text))
-                                else:
-                                    # Только текст без графика
-                                    reply_message = f"📈 **АНАЛИЗ ПО ССЫЛКЕ TRADINGVIEW**\n\n🪙 {symbol}\n⏰ {timeframe}\n\n{analysis_result}"
-                                    if len(reply_message) > 4000:
-                                        reply_message = reply_message[:4000] + "..."
-                                    bot.reply_to(message, reply_message)
-                                return  # Завершаем обработку после успешного анализа ссылки
-                    except Exception as e:
-                        print(f"❌ Ошибка анализа ссылки TradingView в личном сообщении: {e}")
-                        continue
-                        
-                # Если дошли сюда, значит ни одна ссылка не сработала
-                bot.reply_to(message, "❌ Не удалось проанализировать ссылку TradingView")
-                return
-            
-            # ТОЛЬКО если нет ссылок TradingView - проверяем символы криптовалют
-            print(f"🔍 DEBUG: Нет ссылок TradingView, проверяю символы в личном сообщении...")
             symbol_info = extract_crypto_symbol_and_timeframe(user_input)
-            
             if symbol_info:
-                # Уведомляем администратора об анализе монеты
                 symbol, timeframe = symbol_info
-                notify_admin_about_user_request(
-                    message.from_user.id, 
-                    message.from_user.username, 
-                    message.from_user.first_name, 
-                    f"Анализ {symbol} {timeframe}", 
-                    user_input
-                )
-                # Это запрос на анализ конкретной монеты - создаем график!
-                source_name = "Binance" if data_source == "binance" else "CoinGecko"
-                bot.reply_to(message, f"📊 Создаю технический анализ для {symbol} на таймфрейме {timeframe}...\n\n⏳ Получаю данные с {source_name}, рассчитываю уровни и генерирую график с сетапами...")
-                
-                # Получаем данные монеты с указанным таймфреймом из выбранного источника
-                df = get_coin_data(symbol, interval=timeframe, limit=100)
-                
-                if df is not None:
-                    # Рассчитываем технические уровни
-                    levels = calculate_technical_levels(df)
-                    
-                    if levels:
-                        # Создаем график с указанием таймфрейма
-                        chart_buffer = create_trading_chart(symbol, df, levels, timeframe)
-                        
-                        if chart_buffer:
-                            # Генерируем детальный анализ с таймфреймом
-                            analysis_text = generate_chart_analysis(symbol, levels, "", timeframe)
-                            
-                            # Отправляем график с анализом
-                            try:
-                                bot.send_photo(
-                                    message.chat.id,
-                                    chart_buffer.getvalue(),
-                                    caption=safe_caption(analysis_text),
-                                    parse_mode='Markdown'
-                                )
-                                chart_buffer.close()
-                            except Exception as e:
-                                print(f"❌ Ошибка отправки графика: {e}")
-                                bot.reply_to(message, f"📊 График создан, но ошибка отправки.\n\n{analysis_text}")
-                        else:
-                            bot.reply_to(message, f"❌ Не удалось создать график для {symbol} на {timeframe}")
-                    else:
-                        bot.reply_to(message, f"❌ Не удалось рассчитать технические уровни для {symbol} на {timeframe}")
-                else:
-                    bot.reply_to(message, f"❌ Не удалось получить данные для {symbol} на {timeframe}. Проверьте символ монеты и таймфрейм.")
-            
+                print(f"📊 Получаю {symbol} из Binance...")
+                send_chart_analysis(message.chat.id, symbol, timeframe)
+                return
             else:
-                # Уведомляем администратора об общем AI анализе
-                notify_admin_about_user_request(
-                    message.from_user.id, 
-                    message.from_user.username, 
-                    message.from_user.first_name, 
-                    "Общий AI анализ", 
-                    user_input
+                bot.reply_to(
+                    message,
+                    "❌ Не удалось определить символ/таймфрейм.\n"
+                    "Примеры: BTC 1h, xrp 15m, эфир 30 мин, биток1ч, ссылка TradingView"
                 )
-                # Обычный текстовый анализ через AI
-                prompt = f"""Запрос: {user_input}
-
-АНАЛИЗ:
-📊 {user_input}: [оценка]
-📈 Вход: [уровни]
-🛑 Стоп: [уровень] 
-🎯 Цели: [уровни]
-⚖️ Риск: [1-10]
-
-ФАКТЫ ТОЛЬКО!"""
-                
-                response = gemini_client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=prompt
-                )
-                
-                ai_reply = response.text if response.text else "Ошибка генерации ответа"
-                
-                # Ограничиваем длину ответа для Telegram (максимум 4000 символов)
-                max_length = 4000
-                if len(ai_reply) > max_length:
-                    ai_reply = ai_reply[:max_length] + "..."
-                
-                bot.reply_to(message, f"📈 AI Анализ (Gemini):\n{ai_reply}")
         else:
-            bot.reply_to(message, "📊 Отправь фото графика для автоматического AI анализа или название монеты для создания графика с техническим анализом!")
-            
+            bot.reply_to(message, "📊 Отправь символ монеты и таймфрейм (например: `ETHFI 15m`).")
+
     except Exception as e:
-        print(f"❌ Ошибка обработки: {e}")
+        print(f"❌ Ошибка в handle_private_messages: {e}")
         bot.reply_to(message, f"⚠ Ошибка анализа: {e}")
 
-def extract_crypto_symbol_and_timeframe(text):
-    """Извлечь символ криптовалюты и таймфрейм из текста"""
+
+# --- Основная функция анализа ---
+def send_chart_analysis(chat_id, symbol, timeframe):
     try:
-        import re
-        original_text = text.strip()  # Сохраняем оригинальный текст для таймфреймов
-        text = text.upper().strip()  # Для символов используем верхний регистр
-        
-        # Расширенный список криптовалют (добавлены все монеты из пользовательских скриншотов)
-        crypto_symbols = [
-            # Основные монеты
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOGE', 'DOT', 'AVAX',
-            'LINK', 'LTC', 'UNI', 'ALGO', 'VET', 'ICP', 'FIL', 'TRX', 'ETC',
-            'ATOM', 'XLM', 'THETA', 'AAVE', 'SUSHI', 'COMP', 'MKR', 'YFI',
-            'NEAR', 'LUNA', 'FTT', 'CRV', 'SNX', '1INCH', 'ENJ', 'MANA',
-            'SAND', 'AXS', 'GALA', 'CHZ', 'BAT', 'ZIL', 'HOT', 'HBAR',
-            'OPEN', 'PENGU', 'PEPE', 'SHIB', 'THE', 'SUI', 'WLFI', 'MEME',
-            'BONK', 'FLOKI', 'WIF', 'BOME', 'NEIRO', 'DOGS', 'HMSTR', 'CATI', 'NOT', 'TON',
-            # Предыдущие дополнения
-            'ETHFI', 'ORDI', 'PEOPLE', 'DYDX', 'CELO', 'STRK', 'AI', 'POL', 'IOTX', 'CAKE', 'LUNC', 'BAKE', 'OP',
-            # Новые монеты из скриншотов
-            'PUMP', 'TAO', 'ENS', 'ENA', 'S', 'INJ', 'W', 'ADX', 'ROSE', 'USTC', 'SEI', 'FIDA', 'PNUT',
-            'JASMY', 'TURBO', 'EIGEN', 'SCR', 'IO', 'TRB', 'APT', 'LDO', 'ALT', 'WLD', 'BCH', 'AEVO',
-            'ARB', 'ZRX', 'ANKR', 'YGG', 'XAI', 'ILV', 'SCRT', 'EGLD', 'JUP', 'FET', 'GRT', 'PIXEL',
-            'IDEX', 'DASH', 'PORTAL', 'PROM', 'VTHO', 'C98', 'VANRY', 'TIA', 'TRUMP', 'ID', 'JTO',
-            'HOOK', 'MASK', 'PERP', 'FXS', 'MAV', 'SLP', 'RVN', 'CFX', 'MANTA', 'IP'
-        ]
-        
-        # Список поддерживаемых таймфреймов Binance
-        valid_timeframes = [
-            '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'
-        ]
-        
-        # Ищем символ и таймфрейм в тексте
-        found_symbol = None
-        found_timeframe = '1h'  # По умолчанию
-        
-          # Сначала сортируем список монет по длине, чтобы длинные символы (например ETHFI) проверялись раньше коротких (ETH)
-        sorted_symbols = sorted(crypto_symbols, key=len, reverse=True)
+        import matplotlib.dates as mdates
+        df = get_coin_data(symbol, interval=timeframe, limit=200)
+        if df is None or len(df) < 20:
+            bot.send_message(chat_id, f"❌ Недостаточно данных для {symbol} ({timeframe})")
+            return
 
-        # Проверяем прямое совпадение
-        for symbol in sorted_symbols:
-            if re.search(r'\b' + re.escape(symbol) + r'\b', text):
-                found_symbol = symbol
-                break
+        # --- Приведение к DatetimeIndex ---
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            df.set_index("timestamp", inplace=True)
+        elif "open_time" in df.columns:
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", errors="coerce", utc=True)
+            df.set_index("open_time", inplace=True)
+        else:
+            df.index = pd.date_range(end=pd.Timestamp.now(), periods=len(df), freq="1T")
 
-        # Если не найдено — проверяем с USDT
-        if not found_symbol:
-            for symbol in sorted_symbols:
-                if f"{symbol}USDT" in text:
-                    found_symbol = symbol
-                    break
-        
-        # Проверяем ключевые слова
-        if not found_symbol:
-            keyword_map = {
-                'BITCOIN': 'BTC',
-                'ETHEREUM': 'ETH', 
-                'BINANCE': 'BNB',
-                'CARDANO': 'ADA',
-                'SOLANA': 'SOL',
-                'RIPPLE': 'XRP',
-                'DOGECOIN': 'DOGE',
-                'POLKADOT': 'DOT',
-                'AVALANCHE': 'AVAX',
-                'CHAINLINK': 'LINK',
-                'LITECOIN': 'LTC',
-                'UNISWAP': 'UNI'
-            }
-            
-            for keyword, symbol in keyword_map.items():
-                if keyword in text:
-                    found_symbol = symbol
-                    break
-        
-        # Сначала проверяем точные таймфреймы с учетом регистра (1M vs 1m)
-        for tf in valid_timeframes:
-            pattern = r'\b' + re.escape(tf) + r'\b'
-            if re.search(pattern, original_text):  # Используем оригинальный текст с сохранением регистра
-                found_timeframe = tf
-                break
-        
-        # Альтернативные записи таймфреймов (проверяем только если не нашли точный)
-        if found_timeframe == '1h':  # Если остался дефолтный
-            timeframe_aliases = {
-                'MIN': '1m',
-                '1MIN': '1m',
-                '1min': '1m',
-                '3MIN': '3m',
-                '3min': '3m',
-                '5MIN': '5m',
-                '5min': '5m',
-                '15MIN': '15m',
-                '15min': '15m',
-                '30MIN': '30m',
-                '30min': '30m',
-                'HOUR': '1h',
-                'HOURLY': '1h',
-                'hour': '1h',
-                'hourly': '1h',
-                'DAILY': '1d',
-                'daily': '1d',
-                'DAY': '1d',
-                'day': '1d',
-                'WEEK': '1w',
-                'week': '1w',
-                'WEEKLY': '1w',
-                'weekly': '1w',
-                'MONTH': '1M',
-                'month': '1M',
-                'MONTHLY': '1M',
-                'monthly': '1M'
-            }
-            
-            # Ищем алиасы (более точные совпадения) - используем границы слов
-            text_words = text.split()
-            
-            for alias, tf in timeframe_aliases.items():
-                # Проверяем точное совпадение слова
-                if alias in text_words:
-                    found_timeframe = tf
-                    break
-                # Или как часть слова (например XRP15MIN)
-                pattern = r'\b' + re.escape(alias) + r'\b'
-                if re.search(pattern, text, re.IGNORECASE):
-                    found_timeframe = tf
-                    break
-        if found_symbol:
-            return (found_symbol, found_timeframe)
-        
-        return None
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors="coerce", utc=True)
+        df.index = df.index.tz_localize(None)
+
+        # --- Индикаторы ---
+        df["EMA20"] = df["close"].ewm(span=20).mean()
+        df["EMA50"] = df["close"].ewm(span=50).mean()
+        rsi = calculate_rsi(df["close"], 14).iloc[-1]
+        atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
+        last_price = df["close"].iloc[-1]
+
+        stop = last_price - 1.5 * atr
+        tp1 = last_price + 2.0 * atr
+        tp2 = last_price + 3.0 * atr
+        rrr = (tp1 - last_price) / max(1e-12, (last_price - stop))
+        rrr_status = "⚠ Плохое" if rrr < 1 else "⚠ Среднее" if rrr < 2 else "✅ Отличное"
+
+        # --- Определение тренда ---
+        if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] and rsi > 50:
+            direction, icon, trend = "LONG", "🟢", "📈 Восходящий"
+        elif df["EMA20"].iloc[-1] < df["EMA50"].iloc[-1] and rsi < 50:
+            direction, icon, trend = "SHORT", "🔴", "📉 Нисходящий"
+        else:
+            direction, icon, trend = "NEUTRAL", "⚪", "➡ Боковой"
+
+        # --- FVG зоны ---
+        fvg_raw = detect_fvg(df)
+        fvg = [z for z in fvg_raw if isinstance(z, dict) and "low" in z and "high" in z and z["low"] < z["high"]]
+        near = [z for z in fvg if (z["low"] <= last_price * 1.03) and (z["high"] >= last_price * 0.97)]
+        last_fvg = near[-5:] if len(near) > 5 else near
+
+        # --- График ---
+        buf = io.BytesIO()
+        fig, ax = plt.subplots(figsize=(13, 6), facecolor="white")
+        ax.set_facecolor("white")
+
+        # Рисуем свечи (светлая тема)
+        from matplotlib.patches import Rectangle
+        from datetime import timedelta
+        x = df.index
+        width = timedelta(minutes=1)
+        for ts, o, c, h, l in zip(x, df["open"], df["close"], df["high"], df["low"]):
+            color = "#26a69a" if c >= o else "#ef5350"
+            ax.add_patch(Rectangle((ts - width / 2, min(o, c)), width, abs(c - o), color=color, alpha=0.95))
+            ax.vlines(ts, l, h, color=color, linewidth=1)
+
+        ax.plot(x, df["EMA20"], color="#ff9800", lw=1.4, label="EMA20")
+        ax.plot(x, df["EMA50"], color="#7e57c2", lw=1.4, label="EMA50")
+
+        # Зоны Entry / Stop / TP
+        ax.axhspan(last_price*0.998, last_price*1.002, color="#fff3b0", alpha=0.45, label="Entry")
+        ax.axhspan(stop*0.998, stop*1.002, color="#ffb3b3", alpha=0.40, label="Stop")
+        ax.axhspan(tp1*0.998, tp1*1.002, color="#b3ffb3", alpha=0.40, label="TP1")
+        ax.axhspan(tp2*0.998, tp2*1.002, color="#80e080", alpha=0.35, label="TP2")
+
+        for zone in last_fvg:
+            color = "#b3ffb3" if zone.get("type") == "Bullish" else "#ffb3b3"
+            ax.axhspan(zone["low"], zone["high"], color=color, alpha=0.25)
+
+        # Оформление оси X (даты)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m %H:%M'))
+        fig.autofmt_xdate()
+        ax.set_title(f"{symbol} {timeframe} | {icon} {direction} • {trend}", fontsize=12)
+        ax.set_xlabel("Дата / Время")
+        ax.set_ylabel("Цена (USDT)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+
+        # --- Текстовый отчёт ---
+        caption = (
+            f"📊 {symbol} {timeframe}\n\n"
+            f"{icon} {direction} | {trend}\n\n"
+            f"💰 Цена: ${last_price:.3f}\n"
+            f"📊 EMA20: ${df['EMA20'].iloc[-1]:.3f} | RSI: {rsi:.0f}\n"
+            f"📈 ATR: {atr/last_price*100:.1f}% | RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
+            f"🎯 Зоны:\n"
+            f"🟡 Вход: ${last_price*0.995:.3f}-${last_price*1.003:.3f}\n"
+            f"🔴 Стоп: ${stop:.3f}-{stop*1.002:.3f}\n"
+            f"🟢 TP1: ${tp1:.3f}-{tp1*1.002:.3f}\n"
+            f"🟢 TP2: ${tp2:.3f}-{tp2*1.002:.3f}\n"
+        )
+
+        if last_fvg:
+            caption += "\n✅ Ближайшие FVG зоны:\n"
+            for i, z in enumerate(last_fvg, 1):
+                color = "🟢" if z.get("type") == "Bullish" else "🔴"
+                caption += f"{color} FVG{i} ${z['low']:.3f} → ${z['high']:.3f}\n"
+
+        caption += "\n⚠ Не является финансовым советом"
+
+        bot.send_photo(chat_id, buf, caption=caption, parse_mode="Markdown")
+        buf.close()
 
     except Exception as e:
-        print(f"❌ Ошибка извлечения символа и таймфрейма: {e}")
-        return None
-
-    except Exception as e:
-        print(f"❌ Ошибка извлечения символа и таймфрейма: {e}")
-        return None
+        bot.send_message(chat_id, f"⚠ Ошибка анализа: {e}")
+        print(f"❌ Ошибка в send_chart_analysis: {e}")
 
 
-# --- Автопуш проекта в GitHub ---
+# --- Извлечение символа и таймфрейма ---
+def extract_crypto_symbol_and_timeframe(text):
+    import re
+    text = text.lower().replace("минут", "m").replace("мин", "m").replace("час", "h").replace("ч", "h")
+    text = text.replace(" ", "")
+
+    mapping = {
+        "биток": "BTC", "биткоин": "BTC",
+        "эфир": "ETH", "ethereum": "ETH",
+        "сол": "SOL", "солана": "SOL",
+        "рипл": "XRP", "реал": "REAL", "суши": "SUSHI", "бонк": "BONK", "виф": "WIF"
+    }
+
+    for ru, en in mapping.items():
+        if ru in text:
+            text = text.replace(ru, en)
+
+    coins = ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC","WIF","PEPE","REAL","SUSHI"]
+    timeframes = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","12h","1d"]
+
+    found_symbol = next((s for s in coins if s.lower() in text.lower()), None)
+    found_tf = next((t for t in timeframes if t in text.lower()), "1h")
+
+    return (found_symbol, found_tf) if found_symbol else None
+
+
+# --- Автопуш в GitHub ---
 def auto_push():
     import os
     try:
         print("🔄 Автопуш в GitHub...")
         os.system("git add .")
-        os.system('git commit -m "Автопуш из Replit"')
+        os.system('git commit -m \"Автопуш из Replit\"')
         os.system("git push origin main")
         print("✅ Автопуш выполнен")
     except Exception as e:
         print(f"❌ Ошибка автопуша: {e}")
 
 
-# Запускаем задачу автопуша каждые 60 минут
-scheduler.add_job(auto_push, 'interval', hours=1, id='auto_git_push')
+# --- Планировщик ---
+try:
+    scheduler.add_job(auto_push, 'interval', hours=1, id='auto_git_push')
+except:
+    print("⚠ Автопуш уже запланирован, пропускаю дублирование")
 
-
+# --- Запуск Flask / Webhook ---
 if __name__ == '__main__':
     print("✅ Все секреты найдены. Настраиваю webhook...")
     bot.remove_webhook()
