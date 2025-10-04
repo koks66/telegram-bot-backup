@@ -2693,6 +2693,37 @@ def handle_start_scan_command(message):
             )
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка запуска: {e}")
+
+def detect_fvg(df):
+    """
+    Поиск зон Fair Value Gap (FVG / имбаланс) в свечах.
+    Возвращает список зон: [{'type': 'Bullish'/'Bearish', 'gap': (low, high)}]
+    """
+    fvg_zones = []
+    try:
+        for i in range(1, len(df)-1):
+            prev_candle = df.iloc[i-1]
+            curr_candle = df.iloc[i]
+            next_candle = df.iloc[i+1]
+
+            # Bullish FVG (разрыв вниз → вверх)
+            if prev_candle["high"] < next_candle["low"]:
+                fvg_zones.append({
+                    "type": "Bullish",
+                    "gap": (prev_candle["high"], next_candle["low"])
+                })
+
+            # Bearish FVG (разрыв вверх → вниз)
+            if prev_candle["low"] > next_candle["high"]:
+                fvg_zones.append({
+                    "type": "Bearish",
+                    "gap": (next_candle["high"], prev_candle["low"])
+                })
+    except Exception as e:
+        print(f"❌ Ошибка в detect_fvg: {e}")
+
+    return fvg_zones
+
 # --- Команда для фьючерс-анализа ---
 # --- Команда /ftrade ---
 @bot.message_handler(commands=['ftrade'])
@@ -2714,7 +2745,7 @@ def handle_ftrade(message):
         timeframe = args[4] if len(args) > 4 else "1h"
         mode = args[5].lower() if len(args) > 5 else "swing"
 
-        # --- Загружаем данные ---
+        # --- Данные
         df = get_coin_data(symbol.replace("USDT", ""), interval=timeframe, limit=200)
         if df is None or len(df) < 20:
             bot.reply_to(message, f"❌ Недостаточно данных для {symbol} ({timeframe})")
@@ -2722,26 +2753,23 @@ def handle_ftrade(message):
 
         last_price = df["close"].iloc[-1]
 
-        # --- Индикаторы ---
+        # --- Индикаторы
         df["EMA20"] = df["close"].ewm(span=20).mean()
         df["EMA50"] = df["close"].ewm(span=50).mean()
         rsi = calculate_rsi(df["close"], 14).iloc[-1]
 
-        # --- ATR для расчёта стопов/тейков ---
+        # --- ATR для стоп/тейка
         atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
         if mode == "scalp":
             stop_loss = last_price - 1.0 * atr
-            tp1 = last_price + 1.2 * atr
+            tp1 = last_price + 1.5 * atr
             tp2 = last_price + 2.0 * atr
-        else:  # swing
+        else:
             stop_loss = last_price - 1.5 * atr
             tp1 = last_price + 2.0 * atr
             tp2 = last_price + 3.0 * atr
 
-        entry_low = last_price * 0.998
-        entry_high = last_price * 1.002
-
-        # --- Позиция ---
+        # --- Расчёт позиции
         risk_amount = deposit * (risk_percent / 100)
         risk_per_unit = abs(last_price - stop_loss)
         pos_size = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
@@ -2751,53 +2779,65 @@ def handle_ftrade(message):
             leverage += 1
         margin = (pos_size * last_price) / leverage if leverage > 0 else 0
 
-        # --- RRR ---
+        # --- RRR
         reward = abs(tp1 - last_price)
         risk = abs(last_price - stop_loss)
         rrr = reward / risk if risk > 0 else 0
-        rrr_status = "⚠ Плохое" if rrr < 1 else ("⚠ Среднее" if rrr < 2 else "✅ Отличное")
 
-        # --- Автосигнал ---
-        signal_note = ""
-        if rsi < 30:
-            signal_note = "🟢 RSI < 30 → возможный лонг!"
-        elif rsi > 70:
-            signal_note = "🔴 RSI > 70 → возможный шорт!"
-        elif rrr > 2:
-            signal_note = "⚡ Высокое RRR, сделка перспективная!"
+        if rrr < 1:
+            rrr_status = "⚠ Плохое"
+        elif rrr < 2:
+            rrr_status = "⚠ Среднее"
+        else:
+            rrr_status = "✅ Отличное"
 
-        # --- График с зонами ---
+        # --- FVG зоны
+        fvg_zones = detect_fvg(df)
+
+        # Фильтруем зоны ±3% от текущей цены
+        price_range_low = last_price * 0.97
+        price_range_high = last_price * 1.03
+        near_fvg = [fvg for fvg in fvg_zones if fvg.get("low") and fvg.get("high")
+                    and price_range_low <= fvg["high"] and fvg["low"] <= price_range_high]
+
+        # Только ближайшие к цене
+        last_3_fvg = near_fvg[-3:] if len(near_fvg) > 3 else near_fvg
+        last_7_fvg = near_fvg[-7:] if len(near_fvg) > 7 else near_fvg
+
+        # --- График
         buf = io.BytesIO()
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(13, 7))
         plt.plot(df["timestamp"], df["close"], label="Цена", color="blue")
         plt.plot(df["timestamp"], df["EMA20"], label="EMA20", color="orange")
         plt.plot(df["timestamp"], df["EMA50"], label="EMA50", color="purple")
 
-        # Зоны прямоугольниками
-        plt.axhline(last_price, color="yellow", linestyle="--", label="Entry")
-        plt.fill_between(df["timestamp"], entry_low, entry_high, color="yellow", alpha=0.2)
+        # Зоны Entry / Stop / TP
+        plt.axhspan(last_price*0.998, last_price*1.002, color="yellow", alpha=0.3, label="Entry Zone")
+        plt.axhspan(stop_loss*0.998, stop_loss*1.002, color="red", alpha=0.3, label="Stop Zone")
+        plt.axhspan(tp1*0.998, tp1*1.002, color="limegreen", alpha=0.3, label="TP1 Zone")
+        plt.axhspan(tp2*0.998, tp2*1.002, color="darkgreen", alpha=0.3, label="TP2 Zone")
 
-        plt.axhline(stop_loss, color="red", linestyle="--", label="Stop")
-        plt.fill_between(df["timestamp"], stop_loss*0.999, stop_loss*1.001, color="red", alpha=0.2)
+        # --- Рисуем последние 3 FVG рядом с ценой ---
+        for idx, fvg in enumerate(last_3_fvg, 1):
+            low, high = fvg["low"], fvg["high"]
+            color = "green" if fvg.get("type") == "Bullish" else "red"
+            plt.axhspan(low, high, color=color, alpha=0.25)
+            text_label = f"{fvg.get('type')} {low:.4f} → {high:.4f}"
+            plt.text(df["timestamp"].iloc[-1], (low+high)/2, text_label,
+                     color=color, fontsize=8, va="center", ha="left")
 
-        plt.axhline(tp1, color="green", linestyle="--", label="TP1")
-        plt.fill_between(df["timestamp"], tp1*0.999, tp1*1.001, color="lightgreen", alpha=0.2)
-
-        plt.axhline(tp2, color="darkgreen", linestyle="--", label="TP2")
-        plt.fill_between(df["timestamp"], tp2*0.999, tp2*1.001, color="darkgreen", alpha=0.2)
-
-        plt.title(f"{symbol} {timeframe} Анализ")
+        plt.title(f"{symbol} {timeframe} Анализ с FVG", fontsize=12)
         plt.xlabel("Время")
         plt.ylabel("Цена")
         plt.legend()
-        plt.grid()
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(buf, format="png")
         buf.seek(0)
 
-        # --- Итоговый текст ---
+        # --- Отчёт
         caption = (
-            f"📊 **Фьючерс-анализ {symbol} ({timeframe})**\n\n"
+            f"📊 Фьючерс-анализ {symbol} ({timeframe})\n\n"
             f"💰 Баланс: {deposit:.2f} USDT\n"
             f"⚖️ Риск: {risk_percent:.1f}% ({risk_amount:.2f} USDT)\n\n"
             f"📈 Цена: {last_price:.4f}\n"
@@ -2810,37 +2850,24 @@ def handle_ftrade(message):
             f"💵 Маржа: {margin:.2f} USDT\n\n"
             f"📐 RSI: {rsi:.2f}\n"
             f"🧮 EMA20: {df['EMA20'].iloc[-1]:.4f} | EMA50: {df['EMA50'].iloc[-1]:.4f}\n\n"
-            f"{signal_note}\n\n"
-            f"ℹ️ Зоны: Entry (жёлтая), Stop (красная), TP1 (светло-зелёная), TP2 (тёмно-зелёная)"
         )
+
+        if last_7_fvg:
+            caption += f"✅ Ближайшие FVG зоны ({len(last_7_fvg)}):\n"
+            for idx, fvg in enumerate(last_7_fvg, 1):
+                caption += f"{'🟢' if fvg.get('type')=='Bullish' else '🔴'} FVG{idx} {fvg.get('type')} {fvg['low']:.4f} → {fvg['high']:.4f}\n"
+
+        caption += "\nℹ️ Зоны: Entry (жёлтая), Stop (красная), TP1 (светло-зелёная), TP2 (тёмно-зелёная), FVG (зелёные/красные)"
 
         bot.send_photo(message.chat.id, buf, caption=caption, parse_mode="Markdown")
         buf.close()
 
-        # --- JSON (все числа приводим к float) ---
-        setup = {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "deposit": deposit,
-            "risk_percent": risk_percent,
-            "price": float(last_price),
-            "stop_loss": float(stop_loss),
-            "tp1": float(tp1),
-            "tp2": float(tp2),
-            "rrr": float(rrr),
-            "position_size": float(pos_size),
-            "leverage": int(leverage),
-            "margin": float(margin),
-            "rsi": float(rsi),
-            "ema20": float(df["EMA20"].iloc[-1]),
-            "ema50": float(df["EMA50"].iloc[-1]),
-        }
-        with open("ftrade_setup.json", "w") as f:
-            json.dump(setup, f, indent=4)
-
     except Exception as e:
         print(f"❌ Ошибка в /ftrade: {e}")
         bot.reply_to(message, f"⚠ Ошибка в /ftrade: {e}")
+
+
+
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
