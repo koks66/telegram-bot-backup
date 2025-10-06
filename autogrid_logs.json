@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2025-10-06 19:47:59",
+    "symbol": "XRPUSDT",
+    "deposit": 1000,
+    "grids": 50,
+    "mode": "FUTURES LONG",
+    "lower": 0.976,
+    "upper": 1.046,
+    "profit_daily": 2.04,
+    "profit_total": 20.4,
+    "weekly_projection": 142.8
+  }
+]

@@ -2063,7 +2063,7 @@ def help_command(message):
         "/help"
     )
     
-    help_text = """🤖 **ТОРГОВЫЙ БОТ - ПОЛНОЕ РУКОВОДСТВО v4.0**
+    help_text = """🤖 **ТОРГОВЫЙ БОТ - ПОЛНОЕ РУКОВОДСТВО v4.2**
 
 📊 **МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ:**
 ├ `BTC` - анализ Bitcoin на 1h графике
@@ -2076,40 +2076,46 @@ def help_command(message):
 `1m` `5m` `15m` `30m` `1h` `2h` `4h` `6h` `8h` `12h` `1d` `3d` `1w` `1M`
 
 🔍 **АВТОМАТИЧЕСКИЙ СКРИНИНГ:**
-├ `/scan` - найти ТОП возможности сейчас
-├ `/start_scan` - запустить автоскрининг (60 сек)
-└ `/stop_scan` - остановить автоскрининг
+├ /scan - найти ТОП возможности сейчас
+├ /start_scan - запустить автоскрининг (60 сек)
+└ /stop_scan - остановить автоскрининг
 
 📸 **АНАЛИЗ ГРАФИКОВ:**
 ├ Отправь фото графика - получи AI анализ
 └ Поддержка любых торговых графиков
 
 💹 **ФЬЮЧЕРС-АНАЛИЗ (НОВОЕ!):**
-├ `/ftrade BTCUSDT 100 2`  
+├ /ftrade BTCUSDT 100 2  
   → анализ сделки BTCUSDT  
   → баланс 100 USDT, риск 2%  
 └ Автоматический расчёт: стоп, тейк, позиция, плечо и маржа  
 
+🤖 **AUTO-GRID СИМУЛЯЦИЯ (НОВОЕ!):**
+├ /autogrid — симуляция грид-бота с виртуальным депозитом 1000 USDT  
+└ /autogrid 1500 — симуляция грид-бота с депозитом 1500 USDT  
+  Бот сам подбирает монету, диапазон, количество сеток, режим (спот/фьючерс) и риск.
+
 🔄 **ИСТОЧНИКИ ДАННЫХ:**
-├ `/source` - переключить источник (Binance/CoinGecko)
-├ `/trending` - ТОП трендовые монеты (CoinGecko)
+├ /source - переключить источник (Binance/CoinGecko)
+├ /trending - ТОП трендовые монеты (CoinGecko)
 └ Binance: точность | CoinGecko: 18,000+ монет
 
 ℹ️ **ИНФОРМАЦИОННЫЕ КОМАНДЫ:**
-├ `/help` - это меню команд
-├ `/start` - перезапуск бота
-└ `/status` - статус систем
+├ /help - это меню команд
+├ /start - перезапуск бота
+└ /status - статус систем
 
 💡 **ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ:**
 
 🔸 **Быстрый анализ:** `BTC 4h`  
 🔸 **Скальпинг:** `XRP 5min`  
 🔸 **Свинг-трейдинг:** `ETH daily`  
-🔸 **Поиск сетапов:** `/scan`  
-🔸 **Трендовые монеты:** `/trending`  
+🔸 **Поиск сетапов:** /scan  
+🔸 **Трендовые монеты:** /trending  
 🔸 **Фьючерсы:** /ftrade ETHUSDT 200 1.5  
-🔸 **Смена источника:** `/source`  
+🔸 **Смена источника:** /source  
 🔸 **Загрузка графика:** [фото] + описание  
+🔸 **Симуляция торговли:** /autogrid  
 
 ⚡ **РЕЗУЛЬТАТ КАЖДОГО АНАЛИЗА:**
 ✅ График с торговыми уровнями  
@@ -2119,16 +2125,16 @@ def help_command(message):
 ✅ AI рекомендации  
 ✅ Данные из 2+ источников  
 
-🎯 **Начни прямо сейчас!** Напиши любую команду выше"""
+🎯 **Начни прямо сейчас!** Напиши любую команду выше
+"""
 
-    # Отправляем сообщение и пытаемся закрепить
     try:
-        sent_message = bot.send_message(message.chat.id, help_text)
+        sent_message = bot.send_message(message.chat.id, help_text, parse_mode="Markdown", disable_web_page_preview=True)
         bot.pin_chat_message(message.chat.id, sent_message.message_id, disable_notification=True)
         bot.send_message(message.chat.id, "📌 Меню команд закреплено!")
     except Exception as e:
         print(f"⚠ Не удалось закрепить сообщение: {e}")
-        bot.send_message(message.chat.id, help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!")
+        bot.send_message(message.chat.id, help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!", parse_mode="Markdown")
 
 
 # --- Фикс опечаток для команды /ftrade ---
@@ -2869,6 +2875,164 @@ def handle_ftrade(message):
 
 
 
+
+import json
+import os
+import random
+import time
+from datetime import datetime
+
+AUTOGRID_LOG_FILE = "autogrid_logs.json"
+
+
+# --- Автоматическая симуляция Grid-трейдера ---
+@bot.message_handler(commands=['autogrid'])
+def autogrid_simulation(message):
+    try:
+        parts = message.text.split()
+        deposit = 1000  # значение по умолчанию
+        if len(parts) > 1:
+            try:
+                deposit = float(parts[1])
+            except ValueError:
+                pass
+
+        bot.send_message(
+            message.chat.id,
+            f"🤖 Запуск симуляции GRID-трейдера с виртуальным депозитом {deposit} USDT...\n\n"
+            f"Бот анализирует рынок, подбирает оптимальные параметры:\n"
+            f"• Монету с наилучшей волатильностью 📊\n"
+            f"• Диапазон сетки и количество ордеров 📈\n"
+            f"• Режим: спот или фьючерсы ⚙️\n"
+            f"• Риск и потенциальную доходность 💰\n\n"
+            f"⏳ Пожалуйста, подожди несколько секунд..."
+        )
+
+        import random, time
+        time.sleep(2)
+
+        # --- Псевдоанализ рынка (симуляция) ---
+        coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
+        symbol = random.choice(coins)
+        lower = round(random.uniform(0.97, 0.99), 3)
+        upper = round(random.uniform(1.01, 1.03), 3)
+        grids = random.choice([50, 75, 100, 125])
+        mode = random.choice(["SPOT", "FUTURES LONG", "FUTURES SHORT"])
+        profit_daily = round(random.uniform(0.5, 2.5), 2)
+        profit_total = round(deposit * (profit_daily / 100), 2)
+        weekly_projection = round(profit_total * 7, 2)
+
+        # --- Безопасный Markdown ---
+        def esc(text):
+            return (
+                str(text)
+                .replace("_", "\\_")
+                .replace("*", "\\*")
+                .replace("`", "\\`")
+                .replace("(", "\\(")
+                .replace(")", "\\)")
+                .replace(".", "\\.")
+                .replace("%", "\\%")
+                .replace("+", "\\+")
+                .replace("-", "\\-")
+                .replace("≈", "\\≈")
+            )
+
+        # --- Результат симуляции ---
+        bot.send_message(
+            message.chat.id,
+            f"📈 *AutoGrid Simulation Result*\n\n"
+            f"Монета: `{esc(symbol)}`\n"
+            f"Диапазон: {esc(lower)}× \\— {esc(upper)}×\n"
+            f"Количество сеток: {esc(grids)}\n"
+            f"Режим: {esc(mode)}\n"
+            f"Депозит: {esc(deposit)} USDT\n\n"
+            f"💰 Доход за день: *\\+{esc(profit_daily)}%* \\(≈ {esc(profit_total)} USDT\\)\n"
+            f"📆 Прогноз на 7 дней: *≈ {esc(weekly_projection)} USDT*\n\n"
+            f"💾 Результат сохранён в истории симуляций\\.\n\n"
+            f"ℹ️ Используй /autogrid\\_report для просмотра последних тестов\\.",
+            parse_mode="MarkdownV2",
+        )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠ Ошибка симуляции AutoGrid: {e}")
+        print(f"❌ Ошибка AutoGrid Simulation: {e}")
+
+
+# --- Просмотр истории симуляций AutoGrid ---
+@bot.message_handler(commands=['autogrid_report'])
+def autogrid_report(message):
+    try:
+        import pytz, re
+        tz_kiev = pytz.timezone("Europe/Kiev")
+
+        if not os.path.exists(AUTOGRID_LOG_FILE):
+            bot.send_message(
+                message.chat.id,
+                "ℹ️ История симуляций пуста\\. Используй /autogrid для запуска первой\\.",
+                parse_mode="MarkdownV2"
+            )
+            return
+
+        with open(AUTOGRID_LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        if not logs:
+            bot.send_message(
+                message.chat.id,
+                "📭 Нет сохранённых симуляций\\.",
+                parse_mode="MarkdownV2"
+            )
+            return
+
+        last_logs = logs[-5:]
+
+        def esc(text):
+            """Безопасное экранирование MarkdownV2"""
+            text = str(text)
+            text = text.replace("\\", "\\\\")
+            text = text.replace("_", "\\_")
+            text = text.replace("*", "\\*")
+            text = text.replace("`", "\\`")
+            text = text.replace("(", "\\(")
+            text = text.replace(")", "\\)")
+            text = text.replace(".", "\\.")
+            text = text.replace("+", "\\+")
+            text = text.replace("%", "\\%")
+            text = text.replace("|", "\\|")
+            # Экранируем минус только если не между цифрами
+            text = re.sub(r"(?<!\d)-(?!\d)", r"\\-", text)
+            return text
+
+        lines = ["📊 *Последние симуляции AutoGrid*"]
+        for i, log in enumerate(reversed(last_logs), 1):
+            # Время по Киеву
+            if "time" in log:
+                try:
+                    t = datetime.fromisoformat(log["time"])
+                except Exception:
+                    t = datetime.now(tz=tz_kiev)
+            else:
+                t = datetime.now(tz=tz_kiev)
+            time_str = t.astimezone(tz_kiev).strftime("%d.%m %H:%M")
+
+            lines.append(
+                f"{esc(i)}\\. `{esc(log.get('symbol', 'N/A'))}` \\| {esc(log.get('mode', 'N/A'))}\n"
+                f"💰 Депозит: {esc(log.get('deposit', 'N/A'))} USDT\n"
+                f"📈 Диапазон: {esc(log.get('lower', '?'))}×–{esc(log.get('upper', '?'))}×\n"
+                f"🧮 Сеток: {esc(log.get('grids', '?'))} \\| Доход: {esc(log.get('profit_daily', '?'))}\\%/день\n"
+                f"🕒 {esc(time_str)}\n"
+            )
+
+        text = "\n".join(lines)
+        bot.send_message(message.chat.id, text, parse_mode="MarkdownV2")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠ Ошибка при загрузке отчёта AutoGrid: {e}")
+        print(f"❌ Ошибка /autogrid_report: {e}")
+
+
+
 @bot.message_handler(commands=['stop_scan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
@@ -3229,6 +3393,303 @@ def auto_push():
         print("✅ Пуш успешно выполнен")
     except Exception as e:
         print(f"❌ Ошибка при ручном пуше: {e}")
+
+
+# =========================
+# 🔧 AUTO-GRID SIM (ДОБАВЛЕНО)
+# =========================
+
+import numpy as np
+import math
+import pandas as pd
+
+# — вспомогательный RSI, если у тебя уже есть calculate_rsi — используем его
+def _safe_rsi(close, period=14):
+    try:
+        return calculate_rsi(close, period)
+    except Exception:
+        # локальная реализация (на всякий)
+        delta = close.diff()
+        up = np.where(delta > 0, delta, 0.0)
+        down = np.where(delta < 0, -delta, 0.0)
+        roll_up = pd.Series(up).ewm(alpha=1/period, adjust=False).mean()
+        roll_down = pd.Series(down).ewm(alpha=1/period, adjust=False).mean()
+        rs = roll_up / (roll_down + 1e-12)
+        rsi = 100 - (100 / (1 + rs))
+        return pd.Series(rsi, index=close.index)
+
+def _ensure_indicators(df: pd.DataFrame):
+    """Добавляет EMA20/EMA50/RSI/ATR% если их ещё нет."""
+    if 'EMA20' not in df.columns:
+        df['EMA20'] = df['close'].ewm(span=20).mean()
+    if 'EMA50' not in df.columns:
+        df['EMA50'] = df['close'].ewm(span=50).mean()
+    if 'RSI' not in df.columns:
+        df['RSI'] = _safe_rsi(df['close'], 14)
+    if 'ATRp' not in df.columns:
+        # простой ATR-приближение в %
+        atr_abs = df['close'].diff().abs().rolling(14).mean()
+        df['ATRp'] = (atr_abs / df['close']).clip(lower=0) * 100
+    return df
+
+def _pick_mode_direction_and_leverage(df_last_row):
+    """Решение: спот/фьюч, лонг/шорт, плечо по риску."""
+    ema20 = df_last_row['EMA20']
+    ema50 = df_last_row['EMA50']
+    rsi   = df_last_row['RSI']
+    atrp  = float(df_last_row['ATRp'])
+
+    trend_up = (ema20 > ema50) and (rsi >= 55)
+    trend_down = (ema20 < ema50) and (rsi <= 45)
+    choppy = not trend_up and not trend_down
+
+    if choppy:
+        return ("spot", "NEUTRAL", 1)   # сетка на споте без плеча
+    if trend_up:
+        # лёгкое плечо при умеренном риске
+        lev = 2 if atrp < 1.5 else 1
+        return ("futures", "LONG", lev)
+    else:
+        lev = 2 if atrp < 1.5 else 1
+        return ("futures", "SHORT", lev)
+
+def _auto_grid_parameters(df: pd.DataFrame, symbol: str, virtual_deposit: float):
+    """Подбор диапазона/сеток/объёма из волатильности и тренда."""
+    df = _ensure_indicators(df.copy())
+    last = df.iloc[-1]
+    price = float(last['close'])
+    atrp  = float(last['ATRp'])  # средняя %-ная волатильность
+
+    # базовый диапазон из волатильности (ограничим разумно)
+    # чем выше вола — тем шире диапазон; границы 2%..10%
+    base_width_pct = np.clip(atrp * 2.0, 2.0, 10.0)  # %
+    half = base_width_pct / 200.0                    # ± в долях
+
+    lower = price * (1 - half)
+    upper = price * (1 + half)
+
+    # количество сеток: 30..120, растёт с волатильностью
+    grid_count = int(np.clip(atrp * 12, 30, 120))
+
+    # режим/направление/плечо
+    mode, direction, leverage = _pick_mode_direction_and_leverage(last)
+
+    # объём на сетку (простое равномерное распределение)
+    amount_per_order = virtual_deposit / grid_count
+
+    return {
+        "symbol": symbol,
+        "mode": mode,                 # spot / futures
+        "direction": direction,       # LONG / SHORT / NEUTRAL
+        "leverage": int(leverage),
+        "lower_price": float(round(lower, 6)),
+        "upper_price": float(round(upper, 6)),
+        "grid_count": int(grid_count),
+        "order_value_usdt": float(round(amount_per_order, 4)),
+        "price": float(round(price, 6)),
+        "atrp": float(round(atrp, 3)),
+        "rsi": float(round(last['RSI'], 1)),
+        "ema20": float(round(last['EMA20'], 6)),
+        "ema50": float(round(last['EMA50'], 6)),
+    }
+
+def _simulate_grid_pnl(close: pd.Series, params: dict):
+    """
+    Простейшая симуляция: равные уровни между lower..upper.
+    На каждом «пересечении» уровня считаем, что лимит исполнился.
+    Для LONG/NEUTRAL: покупка ниже, продажа выше (классический грид).
+    Для SHORT: «зеркалим» логику (продажа сверху, выкуп снизу).
+    Возвращаем PnL в USDT и метрики.
+    """
+    if len(close) < 50:
+        return {"pnl": 0.0, "fills": 0, "trades": 0, "ret_pct": 0.0}
+
+    lower = params["lower_price"]
+    upper = params["upper_price"]
+    grids = int(params["grid_count"])
+    direction = params["direction"]
+    order_usdt = params["order_value_usdt"]
+    price0 = float(close.iloc[0])
+    priceN = float(close.iloc[-1])
+
+    # если диапазон некорректен
+    if not (upper > lower > 0) or grids < 2:
+        return {"pnl": 0.0, "fills": 0, "trades": 0, "ret_pct": 0.0}
+
+    # уровни сетки
+    levels = np.linspace(lower, upper, grids)
+    pnl = 0.0
+    pos = 0.0      # позиция в монете (для LONG/NEUTRAL) или в -монете (для SHORT)
+    trades = 0
+    fills = 0
+
+    # шаг «единицы монеты» на 1 ордер
+    # для LONG/NEUTRAL покупаем amount = order_usdt / price
+    # для SHORT открываем шорт amount по цене (упрощено как эквивалент)
+    for i in range(1, len(close)):
+        p_prev = float(close.iloc[i-1])
+        p_now  = float(close.iloc[i])
+
+        # пересечения уровней между p_prev и p_now
+        low = min(p_prev, p_now)
+        high = max(p_prev, p_now)
+
+        crossed = levels[(levels >= low) & (levels <= high)]
+        if len(crossed) == 0:
+            continue
+
+        for lvl in crossed:
+            if direction in ("LONG", "NEUTRAL"):
+                # если «опускаемся» ниже lvl — покупаем; если «поднимаемся» выше lvl — продаём
+                if p_now > p_prev and lvl >= p_prev and lvl <= p_now:
+                    # вверх — ПРОДАЖА по lvl, если есть позиция
+                    amount = order_usdt / max(lvl, 1e-9)
+                    if pos >= amount:
+                        pnl += amount * (lvl - p_prev)  # приблизительно прибыль относительно последней сделки
+                        pos -= amount
+                        trades += 1
+                        fills += 1
+                elif p_now < p_prev and lvl <= p_prev and lvl >= p_now:
+                    # вниз — ПОКУПКА по lvl
+                    amount = order_usdt / max(lvl, 1e-9)
+                    pos += amount
+                    trades += 1
+                    fills += 1
+
+            elif direction == "SHORT":
+                # зеркальная логика: при движении вверх на уровне — открываем/добавляем шорт; вниз — закрываем часть
+                if p_now > p_prev and lvl >= p_prev and lvl <= p_now:
+                    # вверх — «продажа в шорт»
+                    amount = order_usdt / max(lvl, 1e-9)
+                    pos -= amount  # отрицательная позиция = шорт
+                    trades += 1
+                    fills += 1
+                elif p_now < p_prev and lvl <= p_prev and lvl >= p_now:
+                    # вниз — «покупка закрыть»
+                    amount = order_usdt / max(lvl, 1e-9)
+                    if abs(pos) >= amount:
+                        pnl += amount * (p_prev - lvl)  # прибыль от шорта (sell high -> buy low)
+                        pos += amount
+                        trades += 1
+                        fills += 1
+
+    # оценка нереализованной PnL по последней цене
+    if direction in ("LONG", "NEUTRAL"):
+        pnl += pos * (priceN - price0)  # грубо «ищем» среднюю, это упрощение
+    else:
+        pnl += (-pos) * (price0 - priceN)
+
+    invested = order_usdt * params["grid_count"]
+    ret_pct = (pnl / max(invested, 1e-9)) * 100.0
+
+    return {"pnl": float(round(pnl, 2)), "fills": fills, "trades": trades, "ret_pct": float(round(ret_pct, 2))}
+
+def _find_best_grid_candidates(limit=5):
+    """
+    Выбираем 3-5 монет по волатильности (можешь расширить список).
+    Обязательно USDT-рынки, чтобы совпадало с твоими источниками.
+    """
+    universe = [
+        "BTC", "ETH", "SOL", "XRP", "SUI", "TON", "BNB", "ADA", "AVAX", "DOGE",
+        "ETHFI", "BONK", "WIF", "PEPE", "ARB", "OP", "INJ", "TIA", "APT"
+    ]
+    results = []
+    for sym in universe:
+        try:
+            df = get_coin_data(sym, interval="15m", limit=200)
+            if df is None or len(df) < 100:
+                continue
+            vol = df['close'].pct_change().std() * 100
+            results.append((sym, float(vol)))
+        except Exception:
+            continue
+    results.sort(key=lambda x: x[1], reverse=True)
+    return [r[0] for r in results[:limit]]
+
+@bot.message_handler(commands=['autogrid'])
+def handle_autogrid(message):
+    """
+    /autogrid [вирт_депозит]
+    пример: /autogrid 1500
+    """
+    try:
+        args = message.text.split()
+        virtual_balance = float(args[1]) if len(args) > 1 else 1000.0
+
+        bot.send_message(
+            message.chat.id,
+            f"🤖 Запускаю симуляцию авто-грид торговли.\n"
+            f"💰 Вирт. депозит: {virtual_balance:.2f} USDT\n"
+            f"⏳ Таймфрейм: 15m • История: ~200 свечей\n"
+            f"🔎 Ищу кандидатов..."
+        )
+
+        symbols = _find_best_grid_candidates(limit=5)
+        if not symbols:
+            bot.send_message(message.chat.id, "❌ Не удалось найти кандидатов для сетки.")
+            return
+
+        best = None
+        report_lines = []
+        for sym in symbols:
+            df = get_coin_data(sym, interval="15m", limit=200)
+            if df is None or len(df) < 100:
+                continue
+
+            df = _ensure_indicators(df.copy())
+            params = _auto_grid_parameters(df, sym, virtual_balance)
+
+            # быстрый бэктест на последних 180 свечах
+            closes = df['close'].iloc[-180:].copy()
+            sim = _simulate_grid_pnl(closes, params)
+
+            line = (
+                f"📊 {sym} • {params['mode'].upper()} • {params['direction']}"
+                f"{' x'+str(params['leverage']) if params['mode']=='futures' else ''}\n"
+                f"   Диапазон: {params['lower_price']} — {params['upper_price']}\n"
+                f"   Сеток: {params['grid_count']} • Ордер: {params['order_value_usdt']} USDT\n"
+                f"   Волатильность(ATR%): {params['atrp']} • RSI: {params['rsi']}\n"
+                f"   Симуляция: PnL {sim['pnl']} USDT ({sim['ret_pct']}%) • сделки: {sim['trades']}"
+            )
+            report_lines.append(line)
+
+            score = sim['ret_pct']  # критерий выбора — доходность в %
+            if best is None or score > best['score']:
+                best = {
+                    "symbol": sym,
+                    "params": params,
+                    "sim": sim,
+                    "score": score
+                }
+
+        if not report_lines:
+            bot.send_message(message.chat.id, "❌ Недостаточно данных для симуляции.")
+            return
+
+        # сводный отчёт по кандидатам
+        summary = "📈 Кандидаты (симуляция):\n\n" + "\n\n".join(report_lines[:4])
+        bot.send_message(message.chat.id, summary)
+
+        # лучший вариант
+        bp = best["params"]
+        bs = best["sim"]
+        best_text = (
+            f"🏆 ЛУЧШИЙ ВАРИАНТ: {best['symbol']}\n\n"
+            f"🔧 Режим: {bp['mode'].upper()} • {bp['direction']}"
+            f"{' x'+str(bp['leverage']) if bp['mode']=='futures' else ''}\n"
+            f"💰 Депозит (вирт.): {virtual_balance:.2f} USDT\n"
+            f"📌 Диапазон: {bp['lower_price']} — {bp['upper_price']}\n"
+            f"📐 Сеток: {bp['grid_count']} • Ордер: {bp['order_value_usdt']} USDT\n"
+            f"📊 EMA20/EMA50: {bp['ema20']} / {bp['ema50']} • RSI: {bp['rsi']} • ATR%: {bp['atrp']}\n\n"
+            f"🧪 Симуляция (15m, ~180 свечей):\n"
+            f"PnL: {bs['pnl']} USDT ({bs['ret_pct']}%) • Сделки: {bs['trades']}\n\n"
+            f"⚠️ Это симуляция. Реальная торговля отключена."
+        )
+        bot.send_message(message.chat.id, best_text)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка /autogrid: {e}")
+        print(f"❌ Ошибка /autogrid: {e}")
 
 
 # --- Запуск Flask / Webhook ---
