@@ -1,14 +1,122 @@
 [
-  {
-    "timestamp": "2025-10-06 19:47:59",
-    "symbol": "XRPUSDT",
-    "deposit": 1000,
-    "grids": 50,
-    "mode": "FUTURES LONG",
-    "lower": 0.976,
-    "upper": 1.046,
-    "profit_daily": 2.04,
-    "profit_total": 20.4,
-    "weekly_projection": 142.8
-  }
+    {
+        "timestamp": "2025-10-06 19:47:59",
+        "symbol": "XRPUSDT",
+        "deposit": 1000,
+        "grids": 50,
+        "mode": "FUTURES LONG",
+        "lower": 0.976,
+        "upper": 1.046,
+        "profit_daily": 2.04,
+        "profit_total": 20.4,
+        "weekly_projection": 142.8
+    },
+    {
+        "symbol": "BTCUSDT",
+        "lower": 0.98,
+        "upper": 1.016,
+        "grids": 75,
+        "mode": "FUTURES LONG",
+        "deposit": 1000,
+        "profit_daily": 1.58,
+        "profit_total": 15.8,
+        "weekly_projection": 110.6,
+        "time": "2025-10-06 23:14:49"
+    },
+    {
+        "symbol": "XRPUSDT",
+        "lower": 0.984,
+        "upper": 1.016,
+        "grids": 75,
+        "mode": "FUTURES SHORT",
+        "deposit": 1000,
+        "profit_daily": 0.61,
+        "profit_total": 6.1,
+        "weekly_projection": 42.7,
+        "time": "2025-10-06 23:17:38"
+    },
+    {
+        "symbol": "BTCUSDT",
+        "lower": 0.975,
+        "upper": 1.019,
+        "grids": 75,
+        "mode": "SPOT",
+        "deposit": 1000,
+        "profit_daily": 1.73,
+        "profit_total": 17.3,
+        "weekly_projection": 121.1,
+        "time": "2025-10-06 23:19:31"
+    },
+    {
+        "symbol": "SOLUSDT",
+        "lower": 0.972,
+        "upper": 1.029,
+        "grids": 125,
+        "mode": "SPOT",
+        "deposit": 1000,
+        "profit_daily": 1.38,
+        "profit_total": 13.8,
+        "weekly_projection": 96.6,
+        "time": "2025-10-06 23:21:59"
+    },
+    {
+        "symbol": "BTCUSDT",
+        "lower": 0.975,
+        "upper": 1.018,
+        "grids": 100,
+        "mode": "SPOT",
+        "deposit": 1000,
+        "profit_daily": 1.35,
+        "profit_total": 13.5,
+        "weekly_projection": 94.5,
+        "time": "2025-10-06 23:24:11"
+    },
+    {
+        "symbol": "ETHUSDT",
+        "lower": 0.976,
+        "upper": 1.029,
+        "grids": 50,
+        "mode": "FUTURES SHORT",
+        "deposit": 1000.0,
+        "profit_daily": 1.45,
+        "profit_total": 14.5,
+        "weekly_projection": 101.5,
+        "time": "2025-10-06 23:24:22"
+    },
+    {
+        "symbol": "XRPUSDT",
+        "lower": 0.979,
+        "upper": 1.028,
+        "grids": 100,
+        "mode": "FUTURES LONG",
+        "deposit": 1000,
+        "profit_daily": 1.04,
+        "profit_total": 10.4,
+        "weekly_projection": 72.8,
+        "time": "2025-10-06 23:26:01"
+    },
+    {
+        "symbol": "XRPUSDT",
+        "lower": 0.986,
+        "upper": 1.017,
+        "grids": 125,
+        "mode": "FUTURES SHORT",
+        "deposit": 1000.0,
+        "profit_daily": 2.05,
+        "profit_total": 20.5,
+        "weekly_projection": 143.5,
+        "time": "2025-10-06 23:26:11"
+    },
+    {
+        "symbol": "DOGEUSDT",
+        "lower": 0.978,
+        "upper": 1.018,
+        "grids": 100,
+        "mode": "FUTURES SHORT",
+        "deposit": 1000,
+        "profit_daily": 0.51,
+        "profit_total": 5.1,
+        "weekly_projection": 35.7,
+        "time": "2025-10-07 00:10:56"
+    }
 ]

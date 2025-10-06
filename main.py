@@ -2049,9 +2049,9 @@ def send_welcome(message):
         "/start"
     )
     
-    bot.reply_to(message, "🚀 **СУПЕР ТОРГОВЫЙ БОТ ГОТОВ!**\n\n📋 Используй /help для полного меню команд\n\n🎯 **Быстрый старт:**\n• `BTC 4h` - график Bitcoin на 4 часа\n• `/scan` - поиск лучших монет сейчас\n• Отправь фото графика для AI анализа")
-
-
+    
+    
+    
 @bot.message_handler(commands=['help', 'menu', 'команды'])
 def help_command(message):
     # Уведомляем администратора о запросе помощи
@@ -2063,7 +2063,7 @@ def help_command(message):
         "/help"
     )
     
-    help_text = """🤖 **ТОРГОВЫЙ БОТ - ПОЛНОЕ РУКОВОДСТВО v4.2**
+    help_text = """🤖 **ТОРГОВЫЙ БОТ - ПОЛНОЕ РУКОВОДСТВО v4.3**
 
 📊 **МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ:**
 ├ `BTC` - анализ Bitcoin на 1h графике
@@ -2092,7 +2092,8 @@ def help_command(message):
 
 🤖 **AUTO-GRID СИМУЛЯЦИЯ (НОВОЕ!):**
 ├ /autogrid — симуляция грид-бота с виртуальным депозитом 1000 USDT  
-└ /autogrid 1500 — симуляция грид-бота с депозитом 1500 USDT  
+├ /autogrid 1500 — симуляция грид-бота с депозитом 1500 USDT  
+└ /autogrid_report — отчёт о последних симуляциях  
   Бот сам подбирает монету, диапазон, количество сеток, режим (спот/фьючерс) и риск.
 
 🔄 **ИСТОЧНИКИ ДАННЫХ:**
@@ -2116,6 +2117,7 @@ def help_command(message):
 🔸 **Смена источника:** /source  
 🔸 **Загрузка графика:** [фото] + описание  
 🔸 **Симуляция торговли:** /autogrid  
+🔸 **Отчёт по симуляциям:** /autogrid_report  
 
 ⚡ **РЕЗУЛЬТАТ КАЖДОГО АНАЛИЗА:**
 ✅ График с торговыми уровнями  
@@ -2129,12 +2131,24 @@ def help_command(message):
 """
 
     try:
-        sent_message = bot.send_message(message.chat.id, help_text, parse_mode="Markdown", disable_web_page_preview=True)
+        sent_message = bot.send_message(
+            message.chat.id,
+            help_text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
         bot.pin_chat_message(message.chat.id, sent_message.message_id, disable_notification=True)
         bot.send_message(message.chat.id, "📌 Меню команд закреплено!")
     except Exception as e:
         print(f"⚠ Не удалось закрепить сообщение: {e}")
-        bot.send_message(message.chat.id, help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!", parse_mode="Markdown")
+        bot.send_message(
+            message.chat.id,
+            help_text + "\n\n💡 Сохрани это сообщение для быстрого доступа!",
+            parse_mode="Markdown"
+        )
+
+
+
 
 
 # --- Фикс опечаток для команды /ftrade ---
@@ -2875,12 +2889,14 @@ def handle_ftrade(message):
 
 
 
-
 import json
 import os
 import random
 import time
 from datetime import datetime
+import pytz
+from types import SimpleNamespace  # ✅ правильный импорт
+from telebot import types
 
 AUTOGRID_LOG_FILE = "autogrid_logs.json"
 
@@ -2908,7 +2924,6 @@ def autogrid_simulation(message):
             f"⏳ Пожалуйста, подожди несколько секунд..."
         )
 
-        import random, time
         time.sleep(2)
 
         # --- Псевдоанализ рынка (симуляция) ---
@@ -2922,10 +2937,11 @@ def autogrid_simulation(message):
         profit_total = round(deposit * (profit_daily / 100), 2)
         weekly_projection = round(profit_total * 7, 2)
 
-        # --- Безопасный Markdown ---
+        # --- Безопасный MarkdownV2 ---
         def esc(text):
             return (
                 str(text)
+                .replace("\\", "\\\\")
                 .replace("_", "\\_")
                 .replace("*", "\\*")
                 .replace("`", "\\`")
@@ -2935,28 +2951,102 @@ def autogrid_simulation(message):
                 .replace("%", "\\%")
                 .replace("+", "\\+")
                 .replace("-", "\\-")
-                .replace("≈", "\\≈")
             )
+
+        # --- Сохраняем результат в JSON ---
+        tz_kiev = pytz.timezone("Europe/Kiev")
+        timestamp = datetime.now(tz_kiev).strftime("%Y-%m-%d %H:%M:%S")
+
+        log_entry = {
+            "symbol": symbol,
+            "lower": lower,
+            "upper": upper,
+            "grids": grids,
+            "mode": mode,
+            "deposit": deposit,
+            "profit_daily": profit_daily,
+            "profit_total": profit_total,
+            "weekly_projection": weekly_projection,
+            "time": timestamp
+        }
+
+        try:
+            if os.path.exists(AUTOGRID_LOG_FILE):
+                with open(AUTOGRID_LOG_FILE, "r") as f:
+                    logs = json.load(f)
+            else:
+                logs = []
+        except Exception:
+            logs = []
+
+        logs.append(log_entry)
+        with open(AUTOGRID_LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=4)
+
+        # --- Средняя доходность последних симуляций ---
+        last_logs = logs[-5:] if logs else []
+        profits = [l["profit_daily"] for l in last_logs if "profit_daily" in l]
+        avg_profit = round(sum(profits) / len(profits), 2) if profits else profit_daily
+
+        # --- Inline-кнопки ---
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton(
+                f"🔄 Повторить симуляцию с {deposit} USDT",
+                callback_data=f"autogrid_restart_{deposit}"
+            )
+        )
+        markup.row(
+            types.InlineKeyboardButton(
+                "📊 Показать последние результаты",
+                callback_data="autogrid_show_report"
+            )
+        )
 
         # --- Результат симуляции ---
         bot.send_message(
             message.chat.id,
             f"📈 *AutoGrid Simulation Result*\n\n"
             f"Монета: `{esc(symbol)}`\n"
-            f"Диапазон: {esc(lower)}× \\— {esc(upper)}×\n"
+            f"Диапазон: {esc(lower)}× — {esc(upper)}×\n"
             f"Количество сеток: {esc(grids)}\n"
             f"Режим: {esc(mode)}\n"
             f"Депозит: {esc(deposit)} USDT\n\n"
-            f"💰 Доход за день: *\\+{esc(profit_daily)}%* \\(≈ {esc(profit_total)} USDT\\)\n"
-            f"📆 Прогноз на 7 дней: *≈ {esc(weekly_projection)} USDT*\n\n"
+            f"💰 Доход за день: *\\+{esc(profit_daily)}\\%* \\(≈ {esc(profit_total)} USDT\\)\n"
+            f"📆 Прогноз на 7 дней: ≈ {esc(weekly_projection)} USDT\n"
+            f"🕒 Время симуляции: {esc(timestamp)} \\(по Киеву\\)\n\n"
+            f"📊 Средняя доходность последних симуляций: *\\+{esc(avg_profit)}\\%/день*\n\n"
             f"💾 Результат сохранён в истории симуляций\\.\n\n"
             f"ℹ️ Используй /autogrid\\_report для просмотра последних тестов\\.",
             parse_mode="MarkdownV2",
+            reply_markup=markup
         )
 
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠ Ошибка симуляции AutoGrid: {e}")
         print(f"❌ Ошибка AutoGrid Simulation: {e}")
+
+
+# --- Обработчик кнопки "Повторить симуляцию" ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("autogrid_restart_"))
+def restart_autogrid(call):
+    try:
+        deposit = float(call.data.split("_")[-1])
+        msg = SimpleNamespace(chat=SimpleNamespace(id=call.message.chat.id), text=f"/autogrid {deposit}")
+        autogrid_simulation(msg)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"⚠ Ошибка при перезапуске симуляции: {e}")
+
+
+# --- Обработчик кнопки "Показать последние результаты" ---
+@bot.callback_query_handler(func=lambda call: call.data == "autogrid_show_report")
+def show_autogrid_report(call):
+    try:
+        msg = SimpleNamespace(chat=SimpleNamespace(id=call.message.chat.id), text="/autogrid_report")
+        autogrid_report(msg)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"⚠ Ошибка при загрузке отчёта: {e}")
+
 
 
 # --- Просмотр истории симуляций AutoGrid ---
@@ -3000,11 +3090,18 @@ def autogrid_report(message):
             text = text.replace("+", "\\+")
             text = text.replace("%", "\\%")
             text = text.replace("|", "\\|")
-            # Экранируем минус только если не между цифрами
             text = re.sub(r"(?<!\d)-(?!\d)", r"\\-", text)
             return text
 
-        lines = ["📊 *Последние симуляции AutoGrid*"]
+        # --- Расчёт средней доходности ---
+        profit_values = [
+            log.get("profit_daily")
+            for log in last_logs
+            if isinstance(log.get("profit_daily"), (int, float))
+        ]
+        avg_profit = round(sum(profit_values) / len(profit_values), 2) if profit_values else 0
+
+        lines = [f"📊 *Последние симуляции AutoGrid*"]
         for i, log in enumerate(reversed(last_logs), 1):
             # Время по Киеву
             if "time" in log:
@@ -3024,12 +3121,16 @@ def autogrid_report(message):
                 f"🕒 {esc(time_str)}\n"
             )
 
+        lines.append(f"\n📈 *Средняя доходность:* \\+{esc(avg_profit)}\\%/день")
+
         text = "\n".join(lines)
         bot.send_message(message.chat.id, text, parse_mode="MarkdownV2")
 
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠ Ошибка при загрузке отчёта AutoGrid: {e}")
         print(f"❌ Ошибка /autogrid_report: {e}")
+
+
 
 
 
@@ -3054,6 +3155,10 @@ def handle_stop_scan_command(message):
             bot.reply_to(message, "⚠️ **АВТОСКРИНИНГ УЖЕ ОСТАНОВЛЕН**\n\n💡 Запусти командой /start_scan для получения автосигналов\n📊 Или используй /scan для разового анализа")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка остановки: {e}")
+
+
+
+
 
 
 # --- Команда /chart ---
