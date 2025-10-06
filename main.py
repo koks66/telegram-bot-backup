@@ -3173,50 +3173,63 @@ def send_chart_analysis(chat_id, symbol, timeframe):
         print(f"❌ Ошибка в send_chart_analysis: {e}")
 
 
-# --- Извлечение символа и таймфрейма ---
+# --- Извлечение символа и таймфрейма (точное определение без путаницы ETH / ETHFI) ---
 def extract_crypto_symbol_and_timeframe(text):
     import re
     text = text.lower().replace("минут", "m").replace("мин", "m").replace("час", "h").replace("ч", "h")
-    text = text.replace(" ", "")
+    text = re.sub(r"\s+", "", text)  # убираем все пробелы
 
+    # --- Явные замены на английские тикеры ---
     mapping = {
         "биток": "BTC", "биткоин": "BTC",
         "эфир": "ETH", "ethereum": "ETH",
         "сол": "SOL", "солана": "SOL",
-        "рипл": "XRP", "реал": "REAL", "суши": "SUSHI", "бонк": "BONK", "виф": "WIF"
+        "рипл": "XRP", "реал": "REAL", "суши": "SUSHI",
+        "бонк": "BONK", "виф": "WIF", "эффи": "ETHFI"
     }
 
     for ru, en in mapping.items():
         if ru in text:
             text = text.replace(ru, en)
 
-    coins = ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC","WIF","PEPE","REAL","SUSHI"]
-    timeframes = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","12h","1d"]
+    # --- Список доступных монет ---
+    coins = [
+        "ETHFI", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX",
+        "DOT", "MATIC", "WIF", "PEPE", "REAL", "SUSHI", "BONK"
+    ]
 
-    found_symbol = next((s for s in coins if s.lower() in text.lower()), None)
-    found_tf = next((t for t in timeframes if t in text.lower()), "1h")
+    # --- Таймфреймы ---
+    timeframes = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
+
+    # --- Ищем символ и таймфрейм ---
+    found_symbol = None
+    for s in sorted(coins, key=len, reverse=True):  # чтобы ETHFI не путался с ETH
+        if s.lower() in text:
+            found_symbol = s
+            break
+
+    # --- Точное извлечение таймфрейма ---
+    tf_match = re.search(r'(\d+)(m|h|d)', text)
+    found_tf = tf_match.group(0) if tf_match else "1h"
 
     return (found_symbol, found_tf) if found_symbol else None
 
 
-# --- Автопуш в GitHub ---
+
+
+
+# --- Автопуш в GitHub (только вручную, автозагрузка отключена) ---
 def auto_push():
     import os
     try:
-        print("🔄 Автопуш в GitHub...")
+        print("🔄 Ручной пуш в GitHub...")
         os.system("git add .")
-        os.system('git commit -m \"Автопуш из Replit\"')
+        os.system('git commit -m "Ручной пуш из Replit"')
         os.system("git push origin main")
-        print("✅ Автопуш выполнен")
+        print("✅ Пуш успешно выполнен")
     except Exception as e:
-        print(f"❌ Ошибка автопуша: {e}")
+        print(f"❌ Ошибка при ручном пуше: {e}")
 
-
-# --- Планировщик ---
-try:
-    scheduler.add_job(auto_push, 'interval', hours=1, id='auto_git_push')
-except:
-    print("⚠ Автопуш уже запланирован, пропускаю дублирование")
 
 # --- Запуск Flask / Webhook ---
 if __name__ == '__main__':
