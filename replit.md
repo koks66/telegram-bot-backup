@@ -2,6 +2,25 @@
 
 This is a Telegram bot for cryptocurrency trading analysis that provides multi-timeframe technical analysis, automated market scanning, and AI-powered trading recommendations. The bot generates technical charts with trading levels, support/resistance zones, and provides entry/exit signals for various cryptocurrencies across different timeframes.
 
+# Recent Changes (October 2025)
+
+## Latest Update (October 8, 2025)
+- **OCR Chart Recognition**: Added automatic recognition of cryptocurrency symbols and timeframes from chart screenshots using Tesseract OCR
+- **Dark/Light Background Detection**: Intelligent background detection for better OCR accuracy on different chart themes
+- **Gemini Vision Fallback**: Automatic fallback to Gemini 2.0 Flash Vision API when OCR fails
+- **Caption Support**: Priority parsing of photo captions for quick manual symbol specification
+- **Auto-Link Analysis**: TradingView links are now automatically analyzed without additional commands
+- **Enhanced TradingView Parser**: Improved extraction of symbols and timeframes from complex TradingView URLs
+- **Timeframe Validation**: Strict validation of timeframes (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M) to prevent invalid values
+- **Improved Error Messages**: Clear messages when tokens are unavailable on exchanges with suggestions for popular alternatives
+
+## Previous Updates
+- **Fixed critical code errors**: Resolved matplotlib chart rendering issues with datetime conversion
+- **API Integration**: Configured automatic fallback from Binance to MEXC API (due to regional restrictions)
+- **Gemini AI**: Successfully integrated Google Gemini 2.0 Flash for market analysis
+- **Workflow**: Bot running on port 5000 with Flask webhook system
+- **All commands verified working**: /start, /help, /scan, /ftrade, /autogrid, coin analysis
+
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
@@ -29,15 +48,16 @@ Preferred communication style: Simple, everyday language.
 - **Real-time Notifications**: Push notifications for high-probability trading signals
 
 ## AI Analysis Component
-- **Context-Aware Recommendations**: AI-powered analysis combining technical indicators with market context
-- **News Integration**: Correlation of trading signals with current cryptocurrency news and market sentiment
-- **Multi-Factor Analysis**: Comprehensive evaluation including technical, fundamental, and sentiment factors
+- **Google Gemini 2.0 Flash**: AI-powered analysis combining technical indicators with market context
+- **Context-Aware Recommendations**: Multi-factor evaluation for trading signals
+- **Automated Coin Ranking**: AI-based scoring and ranking for scalping opportunities
 
 # External Dependencies
 
 ## Market Data Sources
-- **Cryptocurrency Exchange APIs**: Real-time price data and historical market information
-- **Market Data Providers**: Third-party services for comprehensive cryptocurrency market data
+- **MEXC Exchange API**: Primary data source for real-time price data and historical klines (automatic fallback from Binance)
+- **Binance API**: Secondary source (currently blocked in this region, error 451)
+- **CoinGecko API**: Alternative source for trending coins and wide market coverage
 
 ## Chart Rendering Services
 - **Technical Analysis Libraries**: Specialized libraries for calculating technical indicators and chart patterns

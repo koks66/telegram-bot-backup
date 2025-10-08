@@ -37,6 +37,35 @@ FUTURES_SETTINGS = {
     "rrr": 2          # риск/прибыль 1:2
 }
 
+# --- Фильтр нежелательных токенов ---
+EXCLUDED_TOKENS = [
+    # Fan Tokens (низкая ликвидность, зависимость от событий)
+    'ACM', 'CITY', 'LAZIO', 'PORTO', 'SANTOS', 'ALPINE', 'OG',
+    'ASR', 'ATM', 'BAR', 'PSG', 'JUV', 'GAL', 'TRA', 'NAP',
+    'CAI', 'POR', 'UFC',
+    # Стейблкоины (нет волатильности)
+    'USDT', 'BUSD', 'USDC', 'FDUSD', 'TUSD', 'DAI',
+    # ETF-производные и маржинальные токены
+    'UP', 'DOWN', 'BULL', 'BEAR', '2L', '3S', '3L', '2S',
+    # Низколиквидные AI-монеты
+    'AGIX', 'OCEAN', 'FET',
+    # Fiat-пары
+    'USD', 'EUR', 'TRY', 'RUB', 'BRL'
+]
+
+def is_valid_token(symbol):
+    """Проверяет, является ли токен допустимым для анализа"""
+    symbol_clean = symbol.replace('USDT', '').replace('BUSD', '').replace('USD', '').upper()
+    
+    if symbol_clean in EXCLUDED_TOKENS:
+        return False
+    
+    for excluded in EXCLUDED_TOKENS:
+        if symbol_clean.endswith(excluded) or symbol_clean.startswith(excluded):
+            return False
+    
+    return True
+
 app = Flask(__name__)
 
 # --- Загружаем секреты из Replit ---
@@ -171,6 +200,173 @@ def parse_tradingview_link(link):
     except Exception as e:
         print(f"❌ Ошибка парсинга ссылки TradingView: {e}")
         return None, None
+
+# --- Функции для OCR и анализа фото графиков ---
+def detect_image_background(image):
+    """Определяет темный или светлый фон изображения"""
+    try:
+        from PIL import ImageStat
+        stat = ImageStat.Stat(image)
+        avg_brightness = sum(stat.mean) / len(stat.mean)
+        
+        is_dark = avg_brightness < 128
+        print(f"🎨 Средняя яркость: {avg_brightness:.1f} → {'Тёмный' if is_dark else 'Светлый'} фон")
+        return is_dark
+    except Exception as e:
+        print(f"❌ Ошибка определения фона: {e}")
+        return True
+
+def extract_symbol_from_image_ocr(image_path):
+    """Распознает символ и таймфрейм с фото графика через OCR"""
+    try:
+        import pytesseract
+        import cv2
+        from PIL import Image
+        import re
+        
+        print("🔍 Запуск OCR распознавания...")
+        
+        img = Image.open(image_path)
+        is_dark = detect_image_background(img)
+        
+        img_cv = cv2.imread(image_path)
+        
+        if is_dark:
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+        else:
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+        
+        top_region = thresh[0:int(thresh.shape[0] * 0.15), :]
+        
+        text = pytesseract.image_to_string(top_region, config='--psm 6')
+        print(f"📝 OCR текст: {text[:200]}")
+        
+        symbol_patterns = [
+            r'([A-Z]{3,10})[/\s]?USDT',
+            r'([A-Z]{3,10})USDT',
+            r'([A-Z]{3,10})[/\s]?USD',
+            r'([A-Z]{3,10})[/\s]?PERP',
+            r'BINANCE[:\s]+([A-Z]{3,10})',
+            r'([A-Z]{3,10})[/\s]?BUSD',
+        ]
+        
+        symbol = None
+        for pattern in symbol_patterns:
+            match = re.search(pattern, text.upper())
+            if match:
+                symbol = match.group(1)
+                print(f"✅ Найден символ по паттерну '{pattern}': {symbol}")
+                break
+        
+        valid_timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
+        
+        timeframe_patterns = [
+            (r'\b(1M)\b', lambda x: '1M'),
+            (r'\b(1m|3m|5m|15m|30m)\b', lambda x: x.lower()),
+            (r'\b(1h|2h|4h|6h|8h|12h)\b', lambda x: x.lower()),
+            (r'\b(1d|3d)\b', lambda x: x.lower()),
+            (r'\b(1w)\b', lambda x: x.lower()),
+        ]
+        
+        timeframe = None
+        for pattern, converter in timeframe_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                detected_tf = converter(match.group(1))
+                if detected_tf in valid_timeframes:
+                    timeframe = detected_tf
+                    print(f"✅ Найден валидный таймфрейм: {timeframe}")
+                    break
+        
+        if not timeframe:
+            timeframe = "4h"
+            print(f"⚠️ Таймфрейм не распознан, использую дефолтный: {timeframe}")
+        
+        return symbol, timeframe
+        
+    except Exception as e:
+        print(f"❌ Ошибка OCR: {e}")
+        return None, None
+
+def extract_symbol_from_image_gemini(image_path):
+    """Fallback: использует Gemini Vision API для распознавания графика"""
+    try:
+        print("🤖 Запуск Gemini Vision API...")
+        
+        with open(image_path, 'rb') as f:
+            image_data = f.read()
+        
+        prompt = """Посмотри на этот график криптовалюты и определи:
+1. Символ криптовалюты (например: BTC, ETH, SOL)
+2. Таймфрейм - ТОЛЬКО из списка: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+
+Верни только в формате: СИМВОЛ ТАЙМФРЕЙМ
+Например: BTC 4h
+Если таймфрейм не определяется точно, используй 4h
+Если не можешь определить, напиши: UNKNOWN UNKNOWN"""
+
+        response = gemini_client.models.generate_content(
+            model='gemini-2.0-flash-exp',
+            contents=[
+                prompt,
+                {'mime_type': 'image/jpeg', 'data': image_data}
+            ]
+        )
+        
+        result = response.text.strip()
+        print(f"🤖 Gemini ответ: {result}")
+        
+        valid_timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
+        
+        parts = result.split()
+        if len(parts) >= 2 and parts[0].upper() != 'UNKNOWN':
+            symbol = parts[0].upper()
+            timeframe_raw = parts[1]
+            
+            if timeframe_raw.upper() == '1M':
+                timeframe = '1M'
+            else:
+                timeframe = timeframe_raw.lower()
+            
+            if timeframe not in valid_timeframes:
+                print(f"⚠️ Gemini вернул невалидный таймфрейм {timeframe}, использую 4h")
+                timeframe = "4h"
+            
+            print(f"✅ Gemini распознал: {symbol} {timeframe}")
+            return symbol, timeframe
+        
+        return None, None
+        
+    except Exception as e:
+        print(f"❌ Ошибка Gemini Vision: {e}")
+        return None, None
+
+def extract_symbol_and_timeframe_from_image(image_path, caption=None):
+    """Главная функция: извлекает символ и таймфрейм из фото графика"""
+    print("📊 Начинаю анализ изображения графика...")
+    
+    if caption:
+        print(f"📎 Подпись к фото: {caption}")
+        caption_info = extract_crypto_symbol_and_timeframe(caption)
+        if caption_info:
+            symbol, timeframe = caption_info
+            print(f"✅ Извлечено из подписи: {symbol} {timeframe}")
+            return symbol, timeframe
+    
+    symbol, timeframe = extract_symbol_from_image_ocr(image_path)
+    
+    if not symbol:
+        print("⚠️ OCR не дал результата, пробую Gemini Vision...")
+        symbol, timeframe = extract_symbol_from_image_gemini(image_path)
+    
+    if symbol:
+        print(f"✅ Итоговый результат: {symbol} {timeframe}")
+        return symbol, timeframe
+    
+    print("❌ Не удалось распознать символ с изображения")
+    return None, None
 
 def analyze_symbol_from_tradingview(symbol, timeframe, original_text, tradingview_link):
     """Анализирует символ извлеченный из ссылки TradingView используя наши источники данных"""
@@ -435,6 +631,23 @@ COINS_CACHE_TTL = 30  # 30 секунд (ультрабыстрый скальп
 
 # --- BINANCE API ФУНКЦИИ ДЛЯ СКРИНИНГА МОНЕТ ---
 
+def get_mexc_24hr_ticker():
+    """Получить данные по всем парам с MEXC за 24 часа"""
+    try:
+        url = "https://api.mexc.com/api/v3/ticker/24hr"
+        headers = {'User-Agent': 'TradingBot/4.0', 'Accept': 'application/json'}
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            print("✅ MEXC API: данные получены")
+            return response.json()
+        else:
+            print(f"❌ MEXC API ошибка: {response.status_code}")
+            return []
+    except Exception as e:
+        print(f"❌ Ошибка получения данных MEXC: {e}")
+        return []
+
 def get_binance_24hr_ticker():
     """Получить данные по всем парам с Binance за 24 часа"""
     try:
@@ -445,9 +658,41 @@ def get_binance_24hr_ticker():
             return response.json()
         else:
             print(f"❌ Binance API ошибка: {response.status_code}")
-            return []
+            print("🔄 Переключаюсь на MEXC API...")
+            return get_mexc_24hr_ticker()
     except Exception as e:
         print(f"❌ Ошибка получения данных Binance: {e}")
+        print("🔄 Переключаюсь на MEXC API...")
+        return get_mexc_24hr_ticker()
+
+def get_mexc_klines_simple(symbol, interval="5m", limit=20):
+    """Получить краткосрочные свечи с MEXC для анализа скальпинга"""
+    try:
+        interval_map = {'1h': '60m', '2h': '120m', '4h': '4h', '1d': '1d', '1w': '1w', '5m': '5m', '15m': '15m', '30m': '30m'}
+        mexc_interval = interval_map.get(interval, interval)
+        
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={mexc_interval}&limit={limit}"
+        headers = {'User-Agent': 'TradingBot/4.0', 'Accept': 'application/json'}
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            klines = response.json()
+            processed_klines = []
+            for kline in klines:
+                processed_klines.append({
+                    'open_time': kline[0],
+                    'open': float(kline[1]),
+                    'high': float(kline[2]),
+                    'low': float(kline[3]),
+                    'close': float(kline[4]),
+                    'volume': float(kline[5]),
+                    'close_time': kline[6],
+                    'quote_volume': float(kline[7]) if len(kline) > 7 else float(kline[5])
+                })
+            return processed_klines
+        return []
+    except Exception as e:
+        print(f"❌ Ошибка MEXC klines для {symbol}: {e}")
         return []
 
 def get_binance_klines(symbol, interval="5m", limit=20):
@@ -472,10 +717,12 @@ def get_binance_klines(symbol, interval="5m", limit=20):
                     'quote_volume': float(kline[7])
                 })
             return processed_klines
-        return []
+        print(f"🔄 Переключаюсь на MEXC для {symbol}...")
+        return get_mexc_klines_simple(symbol, interval, limit)
     except Exception as e:
         print(f"❌ Ошибка получения klines для {symbol}: {e}")
-        return []
+        print(f"🔄 Переключаюсь на MEXC для {symbol}...")
+        return get_mexc_klines_simple(symbol, interval, limit)
 
 def get_mexc_klines(symbol, interval='1h', limit=100):
     """Получить данные с MEXC API для токенов, недоступных на Binance"""
@@ -483,8 +730,20 @@ def get_mexc_klines(symbol, interval='1h', limit=100):
         # Убедимся что символ в правильном формате
         symbol = f"{symbol}USDT" if not symbol.endswith('USDT') else symbol
         
-        # MEXC использует тот же формат API что и Binance
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        # MEXC использует формат 60m вместо 1h
+        interval_map = {
+            '1h': '60m',
+            '2h': '120m',
+            '4h': '4h',
+            '1d': '1d',
+            '1w': '1w',
+            '5m': '5m',
+            '15m': '15m',
+            '30m': '30m'
+        }
+        mexc_interval = interval_map.get(interval, interval)
+        
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={mexc_interval}&limit={limit}"
         
         headers = {
             'User-Agent': 'TradingBot/4.0',
@@ -634,15 +893,14 @@ def screen_best_coins_for_scalping():
         # Фильтруем только USDT пары (основные)
         usdt_pairs = [ticker for ticker in tickers if ticker['symbol'].endswith('USDT')]
         
-        # Исключаем стейблкоины и токены с низкой ликвидностью
-        excluded = ['USDT', 'BUSD', 'FDUSD', 'TUSD', 'USDC']
+        # Исключаем нежелательные токены через глобальный фильтр
         filtered_pairs = []
         
         # Предварительный фильтр по ликвидности (чтобы не делать много API запросов)
         high_volume_pairs = []
         for ticker in usdt_pairs:
-            symbol = ticker['symbol'].replace('USDT', '')
-            if symbol not in excluded:
+            symbol = ticker['symbol']
+            if is_valid_token(symbol):
                 volume = float(ticker['volume'])
                 quote_volume = float(ticker['quoteVolume'])
                 if volume > 2000000 and quote_volume > 15000000:  # Высокая ликвидность
@@ -1461,23 +1719,61 @@ def get_trending_coins_coingecko():
 
         if response.status_code == 200:
             data = response.json()
+            coins_data = []
+            coin_ids = []
+            
             for coin in data.get('coins', [])[:10]:
                 item = coin.get('item', {})
                 coin_id = item.get('id', '')
-
-                price_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-                price_resp = requests.get(price_url, timeout=10)
-                price_data = price_resp.json() if price_resp.status_code == 200 else {}
-
-                market_data = price_data.get("market_data", {})
-
-                trending.append({
+                coin_ids.append(coin_id)
+                coins_data.append({
+                    'id': coin_id,
                     'symbol': item.get('symbol', '').upper(),
                     'name': item.get('name', 'Unknown'),
                     'score': item.get('score', 0),
-                    'price': market_data.get("current_price", {}).get("usd", None),
-                    'change_24h': market_data.get("price_change_percentage_24h", None),
-                    'volume': market_data.get("total_volume", {}).get("usd", None),
+                })
+            
+            prices_map = {}
+            if coin_ids:
+                ids_str = ','.join(coin_ids)
+                price_url = f"https://api.coingecko.com/api/v3/simple/price"
+                params = {
+                    'ids': ids_str,
+                    'vs_currencies': 'usd',
+                    'include_24hr_vol': 'true',
+                    'include_24hr_change': 'true'
+                }
+                
+                for attempt in range(3):
+                    try:
+                        price_resp = requests.get(price_url, params=params, timeout=15)
+                        
+                        if price_resp.status_code == 200:
+                            prices_map = price_resp.json()
+                            print(f"✅ Получены данные для {len(prices_map)} монет")
+                            break
+                        elif price_resp.status_code == 429:
+                            wait_time = 5 * (attempt + 1)
+                            print(f"⏳ Rate limit CoinGecko, ждем {wait_time}с...")
+                            time.sleep(wait_time)
+                        else:
+                            print(f"⚠️ Ошибка {price_resp.status_code} при получении цен (попытка {attempt+1}/3)")
+                            time.sleep(2)
+                    except requests.RequestException as e:
+                        print(f"⚠️ Сетевая ошибка при получении цен: {e} (попытка {attempt+1}/3)")
+                        time.sleep(2)
+            
+            for coin_info in coins_data:
+                coin_id = coin_info['id']
+                price_data = prices_map.get(coin_id, {})
+                
+                trending.append({
+                    'symbol': coin_info['symbol'],
+                    'name': coin_info['name'],
+                    'score': coin_info['score'],
+                    'price': price_data.get('usd', None),
+                    'change_24h': price_data.get('usd_24h_change', None),
+                    'volume': price_data.get('usd_24h_vol', None),
                 })
 
             return trending
@@ -1552,6 +1848,12 @@ def get_coin_data(symbol, interval="1h", limit=100, source=None, auto_fallback=T
         if df is not None and len(df) >= 20:
             return df
         else:
+            # Автоматический fallback на MEXC если Binance не работает
+            if auto_fallback:
+                print(f"⚠️ Binance не предоставил данные для {symbol}, переключаюсь на MEXC...")
+                df = get_mexc_klines(symbol, interval, limit)
+                if df is not None and len(df) >= 20:
+                    return df
             return None
     
     return None
@@ -1971,6 +2273,7 @@ def webhook():
 @app.route('/')
 def index():
     return "✅ Бот запущен и слушает вебхук!", 200
+
 # --- Утилиты для анализа и форматирования ---
 
 def calculate_rsi(series, period: int = 14):
@@ -1982,61 +2285,9 @@ def calculate_rsi(series, period: int = 14):
     avg_gain = gain.rolling(window=period, min_periods=period).mean()
     avg_loss = loss.rolling(window=period, min_periods=period).mean()
 
-    rs = avg_gain / avg_loss.replace(0, 1e-10)  # защита от деления на ноль
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # при недостатке данных возвращаем нейтральное значение
-
-def safe_caption(text, max_length=1024):
-    """Обрезает текст до безопасной длины для caption в Telegram"""
-    if len(text) <= max_length:
-        return text
-    return text[:max_length-3] + "..."
-
-def smart_format_price(price):
-    """Умное форматирование цены"""
-    if price == 0:
-        return "$0.000"
-    if price >= 1:
-        return f"${price:.3f}"
-    elif price >= 0.01:
-        return f"${price:.4f}"
-    elif price >= 0.001:
-        return f"${price:.5f}"
-    elif price >= 0.0001:
-        return f"${price:.6f}"
-    elif price >= 0.00001:
-        return f"${price:.7f}"
-    else:
-        return f"${price:.8f}"
-
-def generate_chart_analysis(symbol, levels, current_market_analysis="", timeframe='1h'):
-    """Генерирует текстовый анализ для графика"""
-    try:
-        if not levels:
-            return "❌ Не удалось провести технический анализ"
-
-        trend = "📈 Восходящий" if levels.get("trend_up") else "📉 Нисходящий"
-
-        return f"""📊 {symbol.replace("USDT", "/USDT")} {timeframe}
-
-{levels['signal_type']} | {trend}
-
-💰 Цена: {smart_format_price(levels['current_price'])}
-📊 EMA20: {smart_format_price(levels.get('ema_20', 0))} | RSI: {levels.get('rsi', 50):.0f}
-📈 ATR: {levels.get('atr_pct', 0):.1f}% | RRR: 1:{levels.get('risk_reward', 0):.1f}
-
-🎯 Зоны:
-🟡 Вход: {smart_format_price(levels['entry_zone']['lower'])}-{smart_format_price(levels['entry_zone']['upper'])}
-🔴 Стоп: {smart_format_price(levels['stop_zone']['lower'])}-{smart_format_price(levels['stop_zone']['upper'])}
-🟢 TP1: {smart_format_price(levels['tp1_zone']['lower'])}-{smart_format_price(levels['tp1_zone']['upper'])}
-🟢 TP2: {smart_format_price(levels['tp2_zone']['lower'])}-{smart_format_price(levels['tp2_zone']['upper'])}
-
-{current_market_analysis}
-
-⚠ Не является финансовым советом"""
-    except Exception as e:
-        print(f"❌ Ошибка генерации анализа: {e}")
-        return "❌ Ошибка анализа"
+    return rsi.fillna(50)
 # --- Обработка команд ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -2152,13 +2403,11 @@ def help_command(message):
 
 
 # --- Фикс опечаток для команды /ftrade ---
-@bot.message_handler(func=lambda message: message.text and message.text.lower().startswith(("/ftraide", "/ftrad", "/ftrdae", "/ftraid")))
+@bot.message_handler(func=lambda message: message.text and message.text.lower().split()[0] in ["/ftraide", "/ftrdae", "/ftraid"])
 def fix_ftrade_typos(message):
-    corrected = message.text.lower()
-    corrected = corrected.replace("/ftraide", "/ftrade")\
-                         .replace("/ftrdae", "/ftrade")\
-                         .replace("/ftrad", "/ftrade")\
-                         .replace("/ftraid", "/ftrade")
+    parts = message.text.split()
+    parts[0] = "/ftrade"
+    corrected = " ".join(parts)
     
     print(f"✅ Исправлено: {message.text} → {corrected}")  # Лог в консоль
 
@@ -2669,7 +2918,7 @@ def auto_send_scalping_signals():
         print(f"❌ Ошибка авто-скана: {e}")
         if AUTO_SCAN_CHAT_ID:
             bot.send_message(AUTO_SCAN_CHAT_ID, f"⚠ Ошибка авто-скана: {e}")
-@bot.message_handler(commands=['start_scan'])
+@bot.message_handler(commands=['start_scan', 'startscan'])
 def handle_start_scan_command(message):
     global AUTO_SCAN_CHAT_ID
     AUTO_SCAN_CHAT_ID = message.chat.id  # запоминаем чат, куда слать авто-скан
@@ -2760,6 +3009,11 @@ def handle_ftrade(message):
             return
 
         symbol = args[1].upper()
+        
+        if not is_valid_token(symbol):
+            bot.reply_to(message, f"❌ Токен {symbol} исключен из анализа (стейблкоин, фан-токен или низколиквидный)")
+            return
+        
         deposit = float(args[2])
         risk_percent = float(args[3]) if len(args) > 3 else 2
         timeframe = args[4] if len(args) > 4 else "1h"
@@ -2889,165 +3143,11 @@ def handle_ftrade(message):
 
 
 
-import json
-import os
-import random
-import time
-from datetime import datetime
-import pytz
-from types import SimpleNamespace  # ✅ правильный импорт
-from telebot import types
 
+
+
+# --- AutoGrid константы ---
 AUTOGRID_LOG_FILE = "autogrid_logs.json"
-
-
-# --- Автоматическая симуляция Grid-трейдера ---
-@bot.message_handler(commands=['autogrid'])
-def autogrid_simulation(message):
-    try:
-        parts = message.text.split()
-        deposit = 1000  # значение по умолчанию
-        if len(parts) > 1:
-            try:
-                deposit = float(parts[1])
-            except ValueError:
-                pass
-
-        bot.send_message(
-            message.chat.id,
-            f"🤖 Запуск симуляции GRID-трейдера с виртуальным депозитом {deposit} USDT...\n\n"
-            f"Бот анализирует рынок, подбирает оптимальные параметры:\n"
-            f"• Монету с наилучшей волатильностью 📊\n"
-            f"• Диапазон сетки и количество ордеров 📈\n"
-            f"• Режим: спот или фьючерсы ⚙️\n"
-            f"• Риск и потенциальную доходность 💰\n\n"
-            f"⏳ Пожалуйста, подожди несколько секунд..."
-        )
-
-        time.sleep(2)
-
-        # --- Псевдоанализ рынка (симуляция) ---
-        coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
-        symbol = random.choice(coins)
-        lower = round(random.uniform(0.97, 0.99), 3)
-        upper = round(random.uniform(1.01, 1.03), 3)
-        grids = random.choice([50, 75, 100, 125])
-        mode = random.choice(["SPOT", "FUTURES LONG", "FUTURES SHORT"])
-        profit_daily = round(random.uniform(0.5, 2.5), 2)
-        profit_total = round(deposit * (profit_daily / 100), 2)
-        weekly_projection = round(profit_total * 7, 2)
-
-        # --- Безопасный MarkdownV2 ---
-        def esc(text):
-            return (
-                str(text)
-                .replace("\\", "\\\\")
-                .replace("_", "\\_")
-                .replace("*", "\\*")
-                .replace("`", "\\`")
-                .replace("(", "\\(")
-                .replace(")", "\\)")
-                .replace(".", "\\.")
-                .replace("%", "\\%")
-                .replace("+", "\\+")
-                .replace("-", "\\-")
-            )
-
-        # --- Сохраняем результат в JSON ---
-        tz_kiev = pytz.timezone("Europe/Kiev")
-        timestamp = datetime.now(tz_kiev).strftime("%Y-%m-%d %H:%M:%S")
-
-        log_entry = {
-            "symbol": symbol,
-            "lower": lower,
-            "upper": upper,
-            "grids": grids,
-            "mode": mode,
-            "deposit": deposit,
-            "profit_daily": profit_daily,
-            "profit_total": profit_total,
-            "weekly_projection": weekly_projection,
-            "time": timestamp
-        }
-
-        try:
-            if os.path.exists(AUTOGRID_LOG_FILE):
-                with open(AUTOGRID_LOG_FILE, "r") as f:
-                    logs = json.load(f)
-            else:
-                logs = []
-        except Exception:
-            logs = []
-
-        logs.append(log_entry)
-        with open(AUTOGRID_LOG_FILE, "w") as f:
-            json.dump(logs, f, indent=4)
-
-        # --- Средняя доходность последних симуляций ---
-        last_logs = logs[-5:] if logs else []
-        profits = [l["profit_daily"] for l in last_logs if "profit_daily" in l]
-        avg_profit = round(sum(profits) / len(profits), 2) if profits else profit_daily
-
-        # --- Inline-кнопки ---
-        markup = types.InlineKeyboardMarkup()
-        markup.row(
-            types.InlineKeyboardButton(
-                f"🔄 Повторить симуляцию с {deposit} USDT",
-                callback_data=f"autogrid_restart_{deposit}"
-            )
-        )
-        markup.row(
-            types.InlineKeyboardButton(
-                "📊 Показать последние результаты",
-                callback_data="autogrid_show_report"
-            )
-        )
-
-        # --- Результат симуляции ---
-        bot.send_message(
-            message.chat.id,
-            f"📈 *AutoGrid Simulation Result*\n\n"
-            f"Монета: `{esc(symbol)}`\n"
-            f"Диапазон: {esc(lower)}× — {esc(upper)}×\n"
-            f"Количество сеток: {esc(grids)}\n"
-            f"Режим: {esc(mode)}\n"
-            f"Депозит: {esc(deposit)} USDT\n\n"
-            f"💰 Доход за день: *\\+{esc(profit_daily)}\\%* \\(≈ {esc(profit_total)} USDT\\)\n"
-            f"📆 Прогноз на 7 дней: ≈ {esc(weekly_projection)} USDT\n"
-            f"🕒 Время симуляции: {esc(timestamp)} \\(по Киеву\\)\n\n"
-            f"📊 Средняя доходность последних симуляций: *\\+{esc(avg_profit)}\\%/день*\n\n"
-            f"💾 Результат сохранён в истории симуляций\\.\n\n"
-            f"ℹ️ Используй /autogrid\\_report для просмотра последних тестов\\.",
-            parse_mode="MarkdownV2",
-            reply_markup=markup
-        )
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠ Ошибка симуляции AutoGrid: {e}")
-        print(f"❌ Ошибка AutoGrid Simulation: {e}")
-
-
-# --- Обработчик кнопки "Повторить симуляцию" ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith("autogrid_restart_"))
-def restart_autogrid(call):
-    try:
-        deposit = float(call.data.split("_")[-1])
-        msg = SimpleNamespace(chat=SimpleNamespace(id=call.message.chat.id), text=f"/autogrid {deposit}")
-        autogrid_simulation(msg)
-    except Exception as e:
-        bot.send_message(call.message.chat.id, f"⚠ Ошибка при перезапуске симуляции: {e}")
-
-
-# --- Обработчик кнопки "Показать последние результаты" ---
-@bot.callback_query_handler(func=lambda call: call.data == "autogrid_show_report")
-def show_autogrid_report(call):
-    try:
-        msg = SimpleNamespace(chat=SimpleNamespace(id=call.message.chat.id), text="/autogrid_report")
-        autogrid_report(msg)
-    except Exception as e:
-        bot.send_message(call.message.chat.id, f"⚠ Ошибка при загрузке отчёта: {e}")
-
-
 
 # --- Просмотр истории симуляций AutoGrid ---
 @bot.message_handler(commands=['autogrid_report'])
@@ -3134,7 +3234,7 @@ def autogrid_report(message):
 
 
 
-@bot.message_handler(commands=['stop_scan'])
+@bot.message_handler(commands=['stop_scan', 'stopscan'])
 def handle_stop_scan_command(message):
     # Уведомляем администратора о остановке скрининга
     notify_admin_about_user_request(
@@ -3291,213 +3391,6 @@ def handle_chart(message):
 
 
 
-
-
-# --- Обработка личных сообщений (анализ монет / ссылки TradingView / фото) ---
-@bot.message_handler(content_types=['text', 'photo', 'document'])
-def handle_private_messages(message):
-    try:
-        if message.text:
-            user_input = message.text.strip()
-            print(f"🔍 DEBUG: Получен текст: {user_input}")
-
-            symbol_info = extract_crypto_symbol_and_timeframe(user_input)
-            if symbol_info:
-                symbol, timeframe = symbol_info
-                print(f"📊 Получаю {symbol} из Binance...")
-                send_chart_analysis(message.chat.id, symbol, timeframe)
-                return
-            else:
-                bot.reply_to(
-                    message,
-                    "❌ Не удалось определить символ/таймфрейм.\n"
-                    "Примеры: BTC 1h, xrp 15m, эфир 30 мин, биток1ч, ссылка TradingView"
-                )
-        else:
-            bot.reply_to(message, "📊 Отправь символ монеты и таймфрейм (например: `ETHFI 15m`).")
-
-    except Exception as e:
-        print(f"❌ Ошибка в handle_private_messages: {e}")
-        bot.reply_to(message, f"⚠ Ошибка анализа: {e}")
-
-
-# --- Основная функция анализа ---
-def send_chart_analysis(chat_id, symbol, timeframe):
-    try:
-        import matplotlib.dates as mdates
-        df = get_coin_data(symbol, interval=timeframe, limit=200)
-        if df is None or len(df) < 20:
-            bot.send_message(chat_id, f"❌ Недостаточно данных для {symbol} ({timeframe})")
-            return
-
-        # --- Приведение к DatetimeIndex ---
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-            df.set_index("timestamp", inplace=True)
-        elif "open_time" in df.columns:
-            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", errors="coerce", utc=True)
-            df.set_index("open_time", inplace=True)
-        else:
-            df.index = pd.date_range(end=pd.Timestamp.now(), periods=len(df), freq="1T")
-
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index, errors="coerce", utc=True)
-        df.index = df.index.tz_localize(None)
-
-        # --- Индикаторы ---
-        df["EMA20"] = df["close"].ewm(span=20).mean()
-        df["EMA50"] = df["close"].ewm(span=50).mean()
-        rsi = calculate_rsi(df["close"], 14).iloc[-1]
-        atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
-        last_price = df["close"].iloc[-1]
-
-        stop = last_price - 1.5 * atr
-        tp1 = last_price + 2.0 * atr
-        tp2 = last_price + 3.0 * atr
-        rrr = (tp1 - last_price) / max(1e-12, (last_price - stop))
-        rrr_status = "⚠ Плохое" if rrr < 1 else "⚠ Среднее" if rrr < 2 else "✅ Отличное"
-
-        # --- Определение тренда ---
-        if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] and rsi > 50:
-            direction, icon, trend = "LONG", "🟢", "📈 Восходящий"
-        elif df["EMA20"].iloc[-1] < df["EMA50"].iloc[-1] and rsi < 50:
-            direction, icon, trend = "SHORT", "🔴", "📉 Нисходящий"
-        else:
-            direction, icon, trend = "NEUTRAL", "⚪", "➡ Боковой"
-
-        # --- FVG зоны ---
-        fvg_raw = detect_fvg(df)
-        fvg = [z for z in fvg_raw if isinstance(z, dict) and "low" in z and "high" in z and z["low"] < z["high"]]
-        near = [z for z in fvg if (z["low"] <= last_price * 1.03) and (z["high"] >= last_price * 0.97)]
-        last_fvg = near[-5:] if len(near) > 5 else near
-
-        # --- График ---
-        buf = io.BytesIO()
-        fig, ax = plt.subplots(figsize=(13, 6), facecolor="white")
-        ax.set_facecolor("white")
-
-        # Рисуем свечи (светлая тема)
-        from matplotlib.patches import Rectangle
-        from datetime import timedelta
-        x = df.index
-        width = timedelta(minutes=1)
-        for ts, o, c, h, l in zip(x, df["open"], df["close"], df["high"], df["low"]):
-            color = "#26a69a" if c >= o else "#ef5350"
-            ax.add_patch(Rectangle((ts - width / 2, min(o, c)), width, abs(c - o), color=color, alpha=0.95))
-            ax.vlines(ts, l, h, color=color, linewidth=1)
-
-        ax.plot(x, df["EMA20"], color="#ff9800", lw=1.4, label="EMA20")
-        ax.plot(x, df["EMA50"], color="#7e57c2", lw=1.4, label="EMA50")
-
-        # Зоны Entry / Stop / TP
-        ax.axhspan(last_price*0.998, last_price*1.002, color="#fff3b0", alpha=0.45, label="Entry")
-        ax.axhspan(stop*0.998, stop*1.002, color="#ffb3b3", alpha=0.40, label="Stop")
-        ax.axhspan(tp1*0.998, tp1*1.002, color="#b3ffb3", alpha=0.40, label="TP1")
-        ax.axhspan(tp2*0.998, tp2*1.002, color="#80e080", alpha=0.35, label="TP2")
-
-        for zone in last_fvg:
-            color = "#b3ffb3" if zone.get("type") == "Bullish" else "#ffb3b3"
-            ax.axhspan(zone["low"], zone["high"], color=color, alpha=0.25)
-
-        # Оформление оси X (даты)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m %H:%M'))
-        fig.autofmt_xdate()
-        ax.set_title(f"{symbol} {timeframe} | {icon} {direction} • {trend}", fontsize=12)
-        ax.set_xlabel("Дата / Время")
-        ax.set_ylabel("Цена (USDT)")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        buf.seek(0)
-
-        # --- Текстовый отчёт ---
-        caption = (
-            f"📊 {symbol} {timeframe}\n\n"
-            f"{icon} {direction} | {trend}\n\n"
-            f"💰 Цена: ${last_price:.3f}\n"
-            f"📊 EMA20: ${df['EMA20'].iloc[-1]:.3f} | RSI: {rsi:.0f}\n"
-            f"📈 ATR: {atr/last_price*100:.1f}% | RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
-            f"🎯 Зоны:\n"
-            f"🟡 Вход: ${last_price*0.995:.3f}-${last_price*1.003:.3f}\n"
-            f"🔴 Стоп: ${stop:.3f}-{stop*1.002:.3f}\n"
-            f"🟢 TP1: ${tp1:.3f}-{tp1*1.002:.3f}\n"
-            f"🟢 TP2: ${tp2:.3f}-{tp2*1.002:.3f}\n"
-        )
-
-        if last_fvg:
-            caption += "\n✅ Ближайшие FVG зоны:\n"
-            for i, z in enumerate(last_fvg, 1):
-                color = "🟢" if z.get("type") == "Bullish" else "🔴"
-                caption += f"{color} FVG{i} ${z['low']:.3f} → ${z['high']:.3f}\n"
-
-        caption += "\n⚠ Не является финансовым советом"
-
-        bot.send_photo(chat_id, buf, caption=caption, parse_mode="Markdown")
-        buf.close()
-
-    except Exception as e:
-        bot.send_message(chat_id, f"⚠ Ошибка анализа: {e}")
-        print(f"❌ Ошибка в send_chart_analysis: {e}")
-
-
-# --- Извлечение символа и таймфрейма (точное определение без путаницы ETH / ETHFI) ---
-def extract_crypto_symbol_and_timeframe(text):
-    import re
-    text = text.lower().replace("минут", "m").replace("мин", "m").replace("час", "h").replace("ч", "h")
-    text = re.sub(r"\s+", "", text)  # убираем все пробелы
-
-    # --- Явные замены на английские тикеры ---
-    mapping = {
-        "биток": "BTC", "биткоин": "BTC",
-        "эфир": "ETH", "ethereum": "ETH",
-        "сол": "SOL", "солана": "SOL",
-        "рипл": "XRP", "реал": "REAL", "суши": "SUSHI",
-        "бонк": "BONK", "виф": "WIF", "эффи": "ETHFI"
-    }
-
-    for ru, en in mapping.items():
-        if ru in text:
-            text = text.replace(ru, en)
-
-    # --- Список доступных монет ---
-    coins = [
-        "ETHFI", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX",
-        "DOT", "MATIC", "WIF", "PEPE", "REAL", "SUSHI", "BONK"
-    ]
-
-    # --- Таймфреймы ---
-    timeframes = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
-
-    # --- Ищем символ и таймфрейм ---
-    found_symbol = None
-    for s in sorted(coins, key=len, reverse=True):  # чтобы ETHFI не путался с ETH
-        if s.lower() in text:
-            found_symbol = s
-            break
-
-    # --- Точное извлечение таймфрейма ---
-    tf_match = re.search(r'(\d+)(m|h|d)', text)
-    found_tf = tf_match.group(0) if tf_match else "1h"
-
-    return (found_symbol, found_tf) if found_symbol else None
-
-
-
-
-
-# --- Автопуш в GitHub (только вручную, автозагрузка отключена) ---
-def auto_push():
-    import os
-    try:
-        print("🔄 Ручной пуш в GitHub...")
-        os.system("git add .")
-        os.system('git commit -m "Ручной пуш из Replit"')
-        os.system("git push origin main")
-        print("✅ Пуш успешно выполнен")
-    except Exception as e:
-        print(f"❌ Ошибка при ручном пуше: {e}")
 
 
 # =========================
@@ -3698,8 +3591,11 @@ def _find_best_grid_candidates(limit=5):
         "BTC", "ETH", "SOL", "XRP", "SUI", "TON", "BNB", "ADA", "AVAX", "DOGE",
         "ETHFI", "BONK", "WIF", "PEPE", "ARB", "OP", "INJ", "TIA", "APT"
     ]
+    
+    valid_universe = [sym for sym in universe if is_valid_token(sym + "USDT")]
+    
     results = []
-    for sym in universe:
+    for sym in valid_universe:
         try:
             df = get_coin_data(sym, interval="15m", limit=200)
             if df is None or len(df) < 100:
@@ -3776,6 +3672,10 @@ def handle_autogrid(message):
         bot.send_message(message.chat.id, summary)
 
         # лучший вариант
+        if best is None:
+            bot.send_message(message.chat.id, "❌ Не удалось найти подходящий вариант.")
+            return
+            
         bp = best["params"]
         bs = best["sim"]
         best_text = (
@@ -3795,6 +3695,286 @@ def handle_autogrid(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка /autogrid: {e}")
         print(f"❌ Ошибка /autogrid: {e}")
+# --- Обработка личных сообщений (анализ монет / ссылки TradingView / фото) ---
+@bot.message_handler(content_types=['text', 'photo', 'document'])
+def handle_private_messages(message):
+    try:
+        if message.photo:
+            print("📸 Получено фото графика")
+            
+            file_info = bot.get_file(message.photo[-1].file_id)
+            if not file_info.file_path:
+                bot.reply_to(message, "❌ Не удалось получить файл")
+                return
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+                temp_file.write(downloaded_file)
+                image_path = temp_file.name
+            
+            caption = message.caption if message.caption else None
+            
+            bot.reply_to(message, "🔍 Анализирую график...")
+            
+            symbol, timeframe = extract_symbol_and_timeframe_from_image(image_path, caption)
+            
+            os.unlink(image_path)
+            
+            if symbol:
+                if not is_valid_token(symbol + "USDT"):
+                    bot.reply_to(message, f"❌ Токен {symbol} исключен из анализа (стейблкоин, фан-токен или низколиквидный)")
+                    return
+                
+                bot.send_message(message.chat.id, f"📊 Распознан: {symbol} ({timeframe}) — получаю данные...")
+                send_chart_analysis(message.chat.id, symbol, timeframe)
+            else:
+                bot.reply_to(
+                    message, 
+                    "❌ Не удалось распознать график.\n"
+                    "📊 Отправь символ монеты и таймфрейм вручную (например: ETHFI 15m)\n"
+                    "Или добавь подпись к фото с символом."
+                )
+            return
+            
+        elif message.text:
+            user_input = message.text.strip()
+            print(f"🔍 DEBUG: Получен текст: {user_input}")
+            
+            if user_input.startswith('/'):
+                return
+
+            symbol_info = extract_crypto_symbol_and_timeframe(user_input)
+            if symbol_info:
+                symbol, timeframe = symbol_info
+                
+                if not is_valid_token(symbol + "USDT"):
+                    bot.reply_to(message, f"❌ Токен {symbol} исключен из анализа (стейблкоин, фан-токен или низколиквидный)")
+                    return
+                
+                print(f"📊 Получаю {symbol} из Binance...")
+                send_chart_analysis(message.chat.id, symbol, timeframe)
+                return
+            else:
+                bot.reply_to(
+                    message,
+                    "❌ Не удалось определить символ/таймфрейм.\n"
+                    "Примеры: BTC 1h, xrp 15m, эфир 30 мин, биток1ч, ссылка TradingView"
+                )
+        else:
+            bot.reply_to(message, "📊 Отправь символ монеты и таймфрейм (например: `ETHFI 15m`).")
+
+    except Exception as e:
+        print(f"❌ Ошибка в handle_private_messages: {e}")
+        bot.reply_to(message, f"⚠ Ошибка анализа: {e}")
+
+
+# --- Основная функция анализа ---
+def send_chart_analysis(chat_id, symbol, timeframe):
+    try:
+        import matplotlib.dates as mdates
+        df = get_coin_data(symbol, interval=timeframe, limit=200)
+        if df is None or len(df) < 20:
+            bot.send_message(
+                chat_id, 
+                f"❌ Токен {symbol} недоступен на Binance/MEXC\n\n"
+                f"💡 Попробуйте популярные токены:\n"
+                f"BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, MATIC"
+            )
+            return
+
+        # --- Приведение к DatetimeIndex ---
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            df.set_index("timestamp", inplace=True)
+        elif "open_time" in df.columns:
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", errors="coerce", utc=True)
+            df.set_index("open_time", inplace=True)
+        else:
+            df.index = pd.date_range(end=pd.Timestamp.now(), periods=len(df), freq="1T")
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors="coerce", utc=True)
+        df.index = df.index.tz_localize(None)
+
+        # --- Индикаторы ---
+        df["EMA20"] = df["close"].ewm(span=20).mean()
+        df["EMA50"] = df["close"].ewm(span=50).mean()
+        rsi = calculate_rsi(df["close"], 14).iloc[-1]
+        atr = df["close"].diff().abs().rolling(window=14).mean().iloc[-1]
+        last_price = df["close"].iloc[-1]
+
+        stop = last_price - 1.5 * atr
+        tp1 = last_price + 2.0 * atr
+        tp2 = last_price + 3.0 * atr
+        rrr = (tp1 - last_price) / max(1e-12, (last_price - stop))
+        rrr_status = "⚠ Плохое" if rrr < 1 else "⚠ Среднее" if rrr < 2 else "✅ Отличное"
+
+        # --- Определение тренда ---
+        if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] and rsi > 50:
+            direction, icon, trend = "LONG", "🟢", "📈 Восходящий"
+        elif df["EMA20"].iloc[-1] < df["EMA50"].iloc[-1] and rsi < 50:
+            direction, icon, trend = "SHORT", "🔴", "📉 Нисходящий"
+        else:
+            direction, icon, trend = "NEUTRAL", "⚪", "➡ Боковой"
+
+        # --- FVG зоны ---
+        fvg_raw = detect_fvg(df)
+        fvg = [z for z in fvg_raw if isinstance(z, dict) and "low" in z and "high" in z and z["low"] < z["high"]]
+        near = [z for z in fvg if (z["low"] <= last_price * 1.03) and (z["high"] >= last_price * 0.97)]
+        last_fvg = near[-5:] if len(near) > 5 else near
+
+        # --- График ---
+        buf = io.BytesIO()
+        fig, ax = plt.subplots(figsize=(13, 6), facecolor="white")
+        ax.set_facecolor("white")
+
+        # Рисуем свечи (светлая тема)
+        from matplotlib.patches import Rectangle
+        from matplotlib.dates import date2num
+        x_numeric = date2num(df.index)
+        
+        if len(x_numeric) > 1:
+            avg_gap = (x_numeric[-1] - x_numeric[0]) / len(x_numeric)
+            width = avg_gap * 0.6
+        else:
+            width = 0.0005
+        
+        for i, (ts, o, c, h, l) in enumerate(zip(x_numeric, df["open"], df["close"], df["high"], df["low"])):
+            color = "#26a69a" if c >= o else "#ef5350"
+            ax.add_patch(Rectangle((ts - width / 2, min(o, c)), width, abs(c - o), color=color, alpha=0.95))
+            ax.vlines(ts, l, h, color=color, linewidth=1.2)
+        
+        x = df.index
+
+        ax.plot(x, df["EMA20"], color="#ff9800", lw=1.4, label="EMA20")
+        ax.plot(x, df["EMA50"], color="#7e57c2", lw=1.4, label="EMA50")
+
+        # Зоны Entry / Stop / TP
+        ax.axhspan(last_price*0.998, last_price*1.002, color="#fff3b0", alpha=0.45, label="Entry")
+        ax.axhspan(stop*0.998, stop*1.002, color="#ffb3b3", alpha=0.40, label="Stop")
+        ax.axhspan(tp1*0.998, tp1*1.002, color="#b3ffb3", alpha=0.40, label="TP1")
+        ax.axhspan(tp2*0.998, tp2*1.002, color="#80e080", alpha=0.35, label="TP2")
+
+        for zone in last_fvg:
+            color = "#b3ffb3" if zone.get("type") == "Bullish" else "#ffb3b3"
+            ax.axhspan(zone["low"], zone["high"], color=color, alpha=0.25)
+
+        # Оформление оси X (даты)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m %H:%M'))
+        fig.autofmt_xdate()
+        ax.set_title(f"{symbol} {timeframe} | {icon} {direction} • {trend}", fontsize=12)
+        ax.set_xlabel("Дата / Время")
+        ax.set_ylabel("Цена (USDT)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+
+        # --- Текстовый отчёт ---
+        caption = (
+            f"📊 {symbol} {timeframe}\n\n"
+            f"{icon} {direction} | {trend}\n\n"
+            f"💰 Цена: ${last_price:.3f}\n"
+            f"📊 EMA20: ${df['EMA20'].iloc[-1]:.3f} | RSI: {rsi:.0f}\n"
+            f"📈 ATR: {atr/last_price*100:.1f}% | RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
+            f"🎯 Зоны:\n"
+            f"🟡 Вход: ${last_price*0.995:.3f}-${last_price*1.003:.3f}\n"
+            f"🔴 Стоп: ${stop:.3f}-{stop*1.002:.3f}\n"
+            f"🟢 TP1: ${tp1:.3f}-{tp1*1.002:.3f}\n"
+            f"🟢 TP2: ${tp2:.3f}-{tp2*1.002:.3f}\n"
+        )
+
+        if last_fvg:
+            caption += "\n✅ Ближайшие FVG зоны:\n"
+            for i, z in enumerate(last_fvg, 1):
+                color = "🟢" if z.get("type") == "Bullish" else "🔴"
+                caption += f"{color} FVG{i} ${z['low']:.3f} → ${z['high']:.3f}\n"
+
+        caption += "\n⚠ Не является финансовым советом"
+
+        bot.send_photo(chat_id, buf, caption=caption, parse_mode="Markdown")
+        buf.close()
+
+    except Exception as e:
+        bot.send_message(chat_id, f"⚠ Ошибка анализа: {e}")
+        print(f"❌ Ошибка в send_chart_analysis: {e}")
+
+
+# --- Извлечение символа и таймфрейма (точное определение без путаницы ETH / ETHFI) ---
+def extract_crypto_symbol_and_timeframe(text):
+    import re
+    
+    if "tradingview.com" in text.lower() or "tv" in text.lower() and "/" in text:
+        print("🔗 Обнаружена TradingView ссылка, парсим...")
+        symbol, timeframe = parse_tradingview_link(text)
+        if symbol and symbol != "SHORT_LINK":
+            return (symbol, timeframe)
+    
+    original_text = text.lower()
+    
+    text = original_text.replace("минут", "m").replace("мин", "m").replace("час", "h").replace("ч", "h").replace("дня", "d").replace("день", "d")
+    
+    mapping = {
+        "биткоин": "BTC", "биток": "BTC", "битка": "BTC", "битку": "BTC", "биткойн": "BTC",
+        "эфир": "ETH", "эфириум": "ETH", "эфира": "ETH", "эфиру": "ETH", "ethereum": "ETH",
+        "солана": "SOL", "сол": "SOL", "солы": "SOL", "солу": "SOL", "солану": "SOL",
+        "рипл": "XRP", "рипла": "XRP", "риплу": "XRP", "риппл": "XRP",
+        "бнб": "BNB", "бинанс": "BNB",
+        "дож": "DOGE", "доге": "DOGE", "догекоин": "DOGE", "догикоин": "DOGE",
+        "ада": "ADA", "кардано": "ADA",
+        "авакс": "AVAX", "аваланч": "AVAX",
+        "бонк": "BONK", "бонка": "BONK",
+        "виф": "WIF", "вифа": "WIF",
+        "эффи": "ETHFI", "этфи": "ETHFI",
+        "пепе": "PEPE", "пепа": "PEPE",
+        "реал": "REAL",
+        "суши": "SUSHI",
+        "тон": "TON", "тона": "TON",
+        "суй": "SUI", "суи": "SUI"
+    }
+    
+    found_symbol = None
+    for ru, en in sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True):
+        if ru in text:
+            found_symbol = en
+            text = text.replace(ru, en.lower())
+            break
+    
+    if not found_symbol:
+        coins = [
+            "ETHFI", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX",
+            "DOT", "MATIC", "WIF", "PEPE", "REAL", "SUSHI", "BONK", "TON", "SUI"
+        ]
+        text_no_spaces = re.sub(r"\s+", "", text)
+        for s in sorted(coins, key=len, reverse=True):
+            if s.lower() in text_no_spaces:
+                found_symbol = s
+                break
+    
+    tf_match = re.search(r'(\d+)\s*(m|h|d|м|ч|д)', text)
+    found_tf = tf_match.group(1) + tf_match.group(2).replace('м','m').replace('ч','h').replace('д','d') if tf_match else "1h"
+    
+    return (found_symbol, found_tf) if found_symbol else None
+
+
+
+
+
+# --- Автопуш в GitHub (только вручную, автозагрузка отключена) ---
+def auto_push():
+    import os
+    try:
+        print("🔄 Ручной пуш в GitHub...")
+        os.system("git add .")
+        os.system('git commit -m "Ручной пуш из Replit"')
+        os.system("git push origin main")
+        print("✅ Пуш успешно выполнен")
+    except Exception as e:
+        print(f"❌ Ошибка при ручном пуше: {e}")
+
+
 
 
 # --- Запуск Flask / Webhook ---

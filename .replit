@@ -9,7 +9,7 @@ language = "python3"
 
 [nix]
 channel = "stable-25_05"
-packages = ["cacert", "cairo", "chromedriver", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "lcms2", "libcxx", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "pkg-config", "qhull", "tcl", "tk", "zlib"]
+packages = ["cacert", "cairo", "chromedriver", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "lcms2", "libcxx", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "pkg-config", "qhull", "tcl", "tk", "zlib", "wget"]
 
 [env]
 PORT = "5000"
