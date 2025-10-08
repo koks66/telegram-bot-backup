@@ -5,6 +5,7 @@ import tempfile
 from flask import Flask, request
 import telebot
 from telebot import types as tg_types
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from google import genai
 import json
 import asyncio
@@ -3607,6 +3608,22 @@ def _find_best_grid_candidates(limit=5):
     results.sort(key=lambda x: x[1], reverse=True)
     return [r[0] for r in results[:limit]]
 
+def _format_price(price):
+    """Умное форматирование цены в зависимости от её размера"""
+    price = float(price)
+    
+    if price >= 1:
+        # Для больших цен (BTC, ETH): до 4 знаков
+        formatted = f"{price:.4f}".rstrip('0').rstrip('.')
+    elif price >= 0.01:
+        # Для средних цен: до 6 знаков
+        formatted = f"{price:.6f}".rstrip('0').rstrip('.')
+    else:
+        # Для маленьких цен (BONK, PEPE): до 10 знаков
+        formatted = f"{price:.10f}".rstrip('0').rstrip('.')
+    
+    return formatted
+
 @bot.message_handler(commands=['autogrid'])
 def handle_autogrid(message):
     """
@@ -3644,13 +3661,17 @@ def handle_autogrid(message):
             closes = df['close'].iloc[-180:].copy()
             sim = _simulate_grid_pnl(closes, params)
 
+            # Форматирование цен с учетом размера
+            lower_fmt = _format_price(params['lower_price'])
+            upper_fmt = _format_price(params['upper_price'])
+            
             line = (
                 f"📊 {sym} • {params['mode'].upper()} • {params['direction']}"
                 f"{' x'+str(params['leverage']) if params['mode']=='futures' else ''}\n"
-                f"   Диапазон: {params['lower_price']} — {params['upper_price']}\n"
+                f"   Диапазон: {lower_fmt} — {upper_fmt}\n"
                 f"   Сеток: {params['grid_count']} • Ордер: {params['order_value_usdt']} USDT\n"
                 f"   Волатильность(ATR%): {params['atrp']} • RSI: {params['rsi']}\n"
-                f"   Симуляция: PnL {sim['pnl']} USDT ({sim['ret_pct']}%) • сделки: {sim['trades']}"
+                f"   Симуляция: PnL {sim['pnl']:.2f} USDT ({sim['ret_pct']:.2f}%) • сделки: {sim['trades']}"
             )
             report_lines.append(line)
 
@@ -3678,23 +3699,112 @@ def handle_autogrid(message):
             
         bp = best["params"]
         bs = best["sim"]
+        
+        # Сохраняем результат в историю
+        profit_per_day = round(bs['ret_pct'] * 96, 2)  # 96 периодов по 15 мин в сутки
+        log_entry = {
+            "time": datetime.now().isoformat(),
+            "symbol": best['symbol'],
+            "mode": bp['mode'],
+            "direction": bp['direction'],
+            "leverage": bp['leverage'],
+            "deposit": virtual_balance,
+            "lower": bp['lower_price'],
+            "upper": bp['upper_price'],
+            "grids": bp['grid_count'],
+            "order_value": bp['order_value_usdt'],
+            "atrp": bp['atrp'],
+            "rsi": bp['rsi'],
+            "ema20": bp['ema20'],
+            "ema50": bp['ema50'],
+            "pnl": bs['pnl'],
+            "trades": bs['trades'],
+            "profit_daily": profit_per_day
+        }
+        
+        # Читаем существующие логи и добавляем новый
+        if os.path.exists(AUTOGRID_LOG_FILE):
+            with open(AUTOGRID_LOG_FILE, "r") as f:
+                logs = json.load(f)
+        else:
+            logs = []
+        
+        logs.append(log_entry)
+        
+        with open(AUTOGRID_LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=2)
+        
+        # Расчёт средней доходности последних симуляций
+        recent_logs = logs[-5:]
+        profit_values = [
+            log.get("profit_daily")
+            for log in recent_logs
+            if isinstance(log.get("profit_daily"), (int, float))
+        ]
+        avg_profit = round(sum(profit_values) / len(profit_values), 2) if profit_values else 0
+        
+        # Форматирование цен для лучшего варианта
+        lower_best_fmt = _format_price(bp['lower_price'])
+        upper_best_fmt = _format_price(bp['upper_price'])
+        
         best_text = (
             f"🏆 ЛУЧШИЙ ВАРИАНТ: {best['symbol']}\n\n"
             f"🔧 Режим: {bp['mode'].upper()} • {bp['direction']}"
             f"{' x'+str(bp['leverage']) if bp['mode']=='futures' else ''}\n"
             f"💰 Депозит (вирт.): {virtual_balance:.2f} USDT\n"
-            f"📌 Диапазон: {bp['lower_price']} — {bp['upper_price']}\n"
+            f"📌 Диапазон: {lower_best_fmt} — {upper_best_fmt}\n"
             f"📐 Сеток: {bp['grid_count']} • Ордер: {bp['order_value_usdt']} USDT\n"
             f"📊 EMA20/EMA50: {bp['ema20']} / {bp['ema50']} • RSI: {bp['rsi']} • ATR%: {bp['atrp']}\n\n"
             f"🧪 Симуляция (15m, ~180 свечей):\n"
-            f"PnL: {bs['pnl']} USDT ({bs['ret_pct']}%) • Сделки: {bs['trades']}\n\n"
-            f"⚠️ Это симуляция. Реальная торговля отключена."
+            f"PnL: {bs['pnl']:.2f} USDT ({bs['ret_pct']:.2f}%) • Сделки: {bs['trades']}\n\n"
+            f"⚠️ Это симуляция. Реальная торговля отключена.\n\n"
+            f"📊 Средняя доходность последних симуляций: +{avg_profit}%/день\n\n"
+            f"💾 Результат сохранён в истории симуляций.\n\n"
+            f"ℹ️ Используй /autogrid_report для просмотра последних тестов."
         )
-        bot.send_message(message.chat.id, best_text)
+        
+        # Создаем кнопки
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("🔄 Повторить симуляцию с 1000 USDT", callback_data="autogrid_1000")
+        )
+        markup.row(
+            InlineKeyboardButton("📊 Показать последние результаты", callback_data="autogrid_report")
+        )
+        
+        bot.send_message(message.chat.id, best_text, reply_markup=markup)
 
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка /autogrid: {e}")
         print(f"❌ Ошибка /autogrid: {e}")
+
+# --- Обработчик кнопок для AutoGrid ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('autogrid_'))
+def handle_autogrid_callbacks(call):
+    try:
+        bot.answer_callback_query(call.id)
+        
+        # Создаем фейковое сообщение для обработчиков команд
+        class FakeMessage:
+            def __init__(self, chat_id, text):
+                self.chat = type('obj', (object,), {'id': chat_id})
+                self.text = text
+        
+        if call.data == "autogrid_1000":
+            # Повторяем симуляцию с 1000 USDT
+            bot.send_message(call.message.chat.id, "🔄 Запускаю новую симуляцию с 1000 USDT...")
+            fake_msg = FakeMessage(call.message.chat.id, "/autogrid 1000")
+            handle_autogrid(fake_msg)
+            
+        elif call.data == "autogrid_report":
+            # Показываем последние результаты
+            fake_msg = FakeMessage(call.message.chat.id, "/autogrid_report")
+            autogrid_report(fake_msg)
+            
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Ошибка обработки кнопки: {e}")
+        print(f"❌ Ошибка callback autogrid: {e}")
+
 # --- Обработка личных сообщений (анализ монет / ссылки TradingView / фото) ---
 @bot.message_handler(content_types=['text', 'photo', 'document'])
 def handle_private_messages(message):
