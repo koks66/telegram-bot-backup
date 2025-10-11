@@ -244,22 +244,28 @@ def extract_symbol_from_image_ocr(image_path):
         text = pytesseract.image_to_string(top_region, config='--psm 6')
         print(f"📝 OCR текст: {text[:200]}")
         
-        symbol_patterns = [
-            r'([A-Z]{3,10})[/\s]?USDT',
-            r'([A-Z]{3,10})USDT',
-            r'([A-Z]{3,10})[/\s]?USD',
-            r'([A-Z]{3,10})[/\s]?PERP',
-            r'BINANCE[:\s]+([A-Z]{3,10})',
-            r'([A-Z]{3,10})[/\s]?BUSD',
-        ]
-        
+        # Проверяем TOTAL3 отдельно
         symbol = None
-        for pattern in symbol_patterns:
-            match = re.search(pattern, text.upper())
-            if match:
-                symbol = match.group(1)
-                print(f"✅ Найден символ по паттерну '{pattern}': {symbol}")
-                break
+        if re.search(r'TOTAL.*MARKET.*CAP', text.upper()) or re.search(r'CRYPTOCAP', text.upper()):
+            symbol = 'TOTAL3'
+            print(f"✅ Найден TOTAL3 по тексту")
+        
+        if not symbol:
+            symbol_patterns = [
+                r'([A-Z]{3,10})[/\s]?USDT',
+                r'([A-Z]{3,10})USDT',
+                r'([A-Z]{3,10})[/\s]?USD',
+                r'([A-Z]{3,10})[/\s]?PERP',
+                r'BINANCE[:\s]+([A-Z]{3,10})',
+                r'([A-Z]{3,10})[/\s]?BUSD',
+            ]
+            
+            for pattern in symbol_patterns:
+                match = re.search(pattern, text.upper())
+                if match:
+                    symbol = match.group(1)
+                    print(f"✅ Найден символ по паттерну '{pattern}': {symbol}")
+                    break
         
         valid_timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
         
@@ -300,11 +306,13 @@ def extract_symbol_from_image_gemini(image_path):
             image_data = f.read()
         
         prompt = """Посмотри на этот график криптовалюты и определи:
-1. Символ криптовалюты (например: BTC, ETH, SOL)
+1. Символ криптовалюты (например: BTC, ETH, SOL, TOTAL3)
 2. Таймфрейм - ТОЛЬКО из списка: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 
+Важно: Если видишь "TOTAL3" или "Total Market Cap" или "CRYPTOCAP" - это TOTAL3
+
 Верни только в формате: СИМВОЛ ТАЙМФРЕЙМ
-Например: BTC 4h
+Например: BTC 4h или TOTAL3 1d
 Если таймфрейм не определяется точно, используй 4h
 Если не можешь определить, напиши: UNKNOWN UNKNOWN"""
 
@@ -1649,6 +1657,80 @@ def auto_scanning_active():
 
 # --- COINGECKO API INTEGRATION ---
 
+def get_total3_data(days=30):
+    """Получить данные TOTAL3 (капитализация всех альткоинов кроме BTC и ETH)"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (TradingBot/4.0; +https://replit.com)',
+            'Accept': 'application/json',
+        }
+        
+        # Получаем глобальные данные рынка
+        url = "https://api.coingecko.com/api/v3/global"
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            print(f"❌ Ошибка CoinGecko Global API: {response.status_code}")
+            return None
+            
+        global_data = response.json()
+        total_market_cap = global_data['data']['total_market_cap']['usd']
+        
+        # Получаем капитализацию BTC
+        btc_url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+        btc_response = requests.get(btc_url, params={'vs_currency': 'usd', 'days': days}, headers=headers, timeout=15)
+        
+        # Получаем капитализацию ETH
+        eth_url = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart"
+        eth_response = requests.get(eth_url, params={'vs_currency': 'usd', 'days': days}, headers=headers, timeout=15)
+        
+        if btc_response.status_code == 200 and eth_response.status_code == 200:
+            btc_data = btc_response.json()
+            eth_data = eth_response.json()
+            
+            # Формируем DataFrame
+            btc_caps = btc_data.get('market_caps', [])
+            eth_caps = eth_data.get('market_caps', [])
+            
+            if not btc_caps or not eth_caps:
+                print("❌ Недостаточно данных для TOTAL3")
+                return None
+            
+            # Вычисляем TOTAL3 = Total Market Cap - BTC Market Cap - ETH Market Cap
+            df_list = []
+            min_len = min(len(btc_caps), len(eth_caps))
+            
+            for i in range(min_len):
+                timestamp = btc_caps[i][0]
+                btc_cap = btc_caps[i][1]
+                eth_cap = eth_caps[i][1]
+                total3_cap = total_market_cap - btc_cap - eth_cap
+                
+                df_list.append({
+                    'timestamp': timestamp,
+                    'close': total3_cap,
+                    'volume': 0
+                })
+            
+            df = pd.DataFrame(df_list)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+            df['open'] = df['close'].shift(1).fillna(df['close'].iloc[0])
+            volatility = df['close'].pct_change().std() * 0.3
+            df['high'] = df[['open', 'close']].max(axis=1) * (1 + volatility)
+            df['low'] = df[['open', 'close']].min(axis=1) * (1 - volatility)
+            
+            print(f"✅ TOTAL3: получено {len(df)} точек данных")
+            return df
+        else:
+            print(f"❌ Ошибка получения данных BTC/ETH")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Ошибка получения TOTAL3: {e}")
+        return None
+
 def get_coin_data_coingecko(symbol, days=7, retry_count=3):
     """Получить исторические данные монеты с CoinGecko API с улучшенной надежностью"""
     try:
@@ -2322,7 +2404,12 @@ def help_command(message):
 ├ `XRP 4h` - анализ XRP на 4-часовом графике  
 ├ `ETH 15min` - анализ Ethereum на 15-минутном
 ├ `SOL daily` - дневной анализ Solana
-└ `DOGE 1w` - недельный анализ Dogecoin
+├ `DOGE 1w` - недельный анализ Dogecoin
+└ `total 3` или `total 3 1d` - капитализация альткоинов (без BTC/ETH)
+
+💰 **АНАЛИЗ РЫНКА АЛЬТКОИНОВ:**
+├ /total3 - анализ капитализации альткоинов
+└ Показывает входит/выходит капитал из альткоинов
 
 ⏰ **Поддерживаемые таймфреймы:**
 `1m` `5m` `15m` `30m` `1h` `2h` `4h` `6h` `8h` `12h` `1d` `3d` `1w` `1M`
@@ -2427,6 +2514,11 @@ def check_binance_api():
             return "🔴 Binance API: **ОШИБКА**"
     except Exception:
         return "🔴 Binance API: **ОШИБКА**"
+
+@bot.message_handler(commands=['total3'])
+def total3_command(message):
+    bot.send_message(message.chat.id, "📊 Анализирую капитализацию альткоинов (без BTC и ETH)...")
+    send_chart_analysis(message.chat.id, 'TOTAL3', '1d')
 
 @bot.message_handler(commands=['status'])
 def status_command(message):
@@ -3778,6 +3870,17 @@ def handle_autogrid(message):
         bot.send_message(message.chat.id, f"❌ Ошибка /autogrid: {e}")
         print(f"❌ Ошибка /autogrid: {e}")
 
+# --- Обработчик кнопки TOTAL3 ---
+@bot.callback_query_handler(func=lambda call: call.data == 'total3_analyze')
+def handle_total3_callback(call):
+    try:
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "📊 Анализирую капитализацию альткоинов...")
+        send_chart_analysis(call.message.chat.id, 'TOTAL3', '1d')
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Ошибка анализа TOTAL3: {e}")
+        print(f"❌ Ошибка callback total3: {e}")
+
 # --- Обработчик кнопок для AutoGrid ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('autogrid_'))
 def handle_autogrid_callbacks(call):
@@ -3831,7 +3934,7 @@ def handle_private_messages(message):
             os.unlink(image_path)
             
             if symbol:
-                if not is_valid_token(symbol + "USDT"):
+                if symbol != 'TOTAL3' and not is_valid_token(symbol + "USDT"):
                     bot.reply_to(message, f"❌ Токен {symbol} исключен из анализа (стейблкоин, фан-токен или низколиквидный)")
                     return
                 
@@ -3857,7 +3960,7 @@ def handle_private_messages(message):
             if symbol_info:
                 symbol, timeframe = symbol_info
                 
-                if not is_valid_token(symbol + "USDT"):
+                if symbol != 'TOTAL3' and not is_valid_token(symbol + "USDT"):
                     bot.reply_to(message, f"❌ Токен {symbol} исключен из анализа (стейблкоин, фан-токен или низколиквидный)")
                     return
                 
@@ -3882,7 +3985,22 @@ def handle_private_messages(message):
 def send_chart_analysis(chat_id, symbol, timeframe):
     try:
         import matplotlib.dates as mdates
-        df = get_coin_data(symbol, interval=timeframe, limit=200)
+        
+        # Проверка на индексы TradingView (кроме TOTAL3)
+        if symbol in ['TOTAL', 'TOTAL2', 'BTC.D', 'USDT.D']:
+            bot.send_message(
+                chat_id,
+                f"❌ {symbol} - это индекс TradingView, а не торговая пара.\n\n"
+                f"💡 Бот анализирует только криптовалюты с Binance/MEXC:\n"
+                f"BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, MATIC"
+            )
+            return
+        
+        # Специальная обработка TOTAL3
+        if symbol == 'TOTAL3':
+            df = get_total3_data(days=30)
+        else:
+            df = get_coin_data(symbol, interval=timeframe, limit=200)
         if df is None or len(df) < 20:
             bot.send_message(
                 chat_id, 
@@ -3982,25 +4100,59 @@ def send_chart_analysis(chat_id, symbol, timeframe):
         plt.savefig(buf, format="png")
         buf.seek(0)
 
-        # --- Текстовый отчёт ---
-        caption = (
-            f"📊 {symbol} {timeframe}\n\n"
-            f"{icon} {direction} | {trend}\n\n"
-            f"💰 Цена: ${last_price:.3f}\n"
-            f"📊 EMA20: ${df['EMA20'].iloc[-1]:.3f} | RSI: {rsi:.0f}\n"
-            f"📈 ATR: {atr/last_price*100:.1f}% | RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
-            f"🎯 Зоны:\n"
-            f"🟡 Вход: ${last_price*0.995:.3f}-${last_price*1.003:.3f}\n"
-            f"🔴 Стоп: ${stop:.3f}-{stop*1.002:.3f}\n"
-            f"🟢 TP1: ${tp1:.3f}-{tp1*1.002:.3f}\n"
-            f"🟢 TP2: ${tp2:.3f}-{tp2*1.002:.3f}\n"
-        )
+        # --- Функция форматирования цены ---
+        def fmt_price(price):
+            if price < 0.01:
+                return f"{price:.8f}"
+            else:
+                return f"{price:.3f}"
 
-        if last_fvg:
+        # --- Текстовый отчёт ---
+        if symbol == 'TOTAL3':
+            # Специальный анализ для TOTAL3
+            price_change_24h = ((df['close'].iloc[-1] - df['close'].iloc[-24]) / df['close'].iloc[-24] * 100) if len(df) >= 24 else 0
+            price_change_7d = ((df['close'].iloc[-1] - df['close'].iloc[-168]) / df['close'].iloc[-168] * 100) if len(df) >= 168 else 0
+            
+            if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] and price_change_7d > 0:
+                capital_flow = "💰 Капитал ВХОДИТ в альткоины"
+                flow_emoji = "🟢"
+            elif df["EMA20"].iloc[-1] < df["EMA50"].iloc[-1] and price_change_7d < 0:
+                capital_flow = "📉 Капитал ПОКИДАЕТ альткоины"
+                flow_emoji = "🔴"
+            else:
+                capital_flow = "⚖️ Капитал в боковом движении"
+                flow_emoji = "⚪"
+            
+            caption = (
+                f"📊 TOTAL3 - Капитализация альткоинов\n"
+                f"(без BTC и ETH)\n\n"
+                f"{flow_emoji} {capital_flow}\n\n"
+                f"💰 Капитализация: ${last_price/1e9:.1f}B\n"
+                f"📊 Изменение 24ч: {price_change_24h:+.1f}%\n"
+                f"📈 Изменение 7д: {price_change_7d:+.1f}%\n"
+                f"🔵 EMA20: ${df['EMA20'].iloc[-1]/1e9:.1f}B | RSI: {rsi:.0f}\n\n"
+                f"📊 Анализ:\n"
+                f"{icon} Тренд: {trend}\n"
+            )
+        else:
+            caption = (
+                f"📊 {symbol} {timeframe}\n\n"
+                f"{icon} {direction} | {trend}\n\n"
+                f"💰 Цена: ${fmt_price(last_price)}\n"
+                f"📊 EMA20: ${fmt_price(df['EMA20'].iloc[-1])} | RSI: {rsi:.0f}\n"
+                f"📈 ATR: {atr/last_price*100:.1f}% | RRR: 1:{rrr:.2f} → {rrr_status}\n\n"
+                f"🎯 Зоны:\n"
+                f"🟡 Вход: ${fmt_price(last_price*0.995)}-${fmt_price(last_price*1.003)}\n"
+                f"🔴 Стоп: ${fmt_price(stop)}-{fmt_price(stop*1.002)}\n"
+                f"🟢 TP1: ${fmt_price(tp1)}-{fmt_price(tp1*1.002)}\n"
+                f"🟢 TP2: ${fmt_price(tp2)}-{fmt_price(tp2*1.002)}\n"
+            )
+
+        if last_fvg and symbol != 'TOTAL3':
             caption += "\n✅ Ближайшие FVG зоны:\n"
             for i, z in enumerate(last_fvg, 1):
                 color = "🟢" if z.get("type") == "Bullish" else "🔴"
-                caption += f"{color} FVG{i} ${z['low']:.3f} → ${z['high']:.3f}\n"
+                caption += f"{color} FVG{i} ${fmt_price(z['low'])} → ${fmt_price(z['high'])}\n"
 
         caption += "\n⚠ Не является финансовым советом"
 
@@ -4054,8 +4206,8 @@ def extract_crypto_symbol_and_timeframe(text):
     
     if not found_symbol:
         coins = [
-            "ETHFI", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX",
-            "DOT", "MATIC", "WIF", "PEPE", "REAL", "SUSHI", "BONK", "TON", "SUI"
+            "TOTAL3", "ETHFI", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX",
+            "DOT", "MATIC", "WIF", "PEPE", "REAL", "SUSHI", "BONK", "TON", "SUI", "XPL"
         ]
         text_no_spaces = re.sub(r"\s+", "", text)
         for s in sorted(coins, key=len, reverse=True):

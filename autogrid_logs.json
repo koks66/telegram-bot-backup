@@ -655,24 +655,5 @@
     "pnl": 51.47,
     "trades": 348,
     "profit_daily": 494.4
-  },
-  {
-    "time": "2025-10-08T13:29:19.773602",
-    "symbol": "BNB",
-    "mode": "spot",
-    "direction": "NEUTRAL",
-    "leverage": 1,
-    "deposit": 1000.0,
-    "lower": 1286.7921,
-    "upper": 1312.7879,
-    "grids": 30,
-    "order_value": 33.3333,
-    "atrp": 0.222,
-    "rsi": 31.0,
-    "ema20": 1309.078746,
-    "ema50": 1305.215819,
-    "pnl": 47.42,
-    "trades": 322,
-    "profit_daily": 455.04
   }
 ]
